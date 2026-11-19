@@ -325,7 +325,7 @@ select.input{background-image:linear-gradient(45deg,transparent 50%,var(--ink-3)
 const KEY = 'tutorbook.v1';
 const DEFAULT = () => ({
   v:1,
-  settings:{ tutorName:'', signOff:'', country:'65', currency:'S$', tone:'report', engine:'compose', llmModel:'Qwen2.5-0.5B-Instruct-q4f16_1-MLC', onboarded:false, hideInstall:false },
+  settings:{ tutorName:'', signOff:'', country:'65', currency:'S$', tone:'report', engine:'compose', llmModel:'Qwen2.5-0.5B-Instruct-q4f16_1-MLC', onboarded:false, autoLevel:true, levelYear:0, hideInstall:false },
   students:[], lessons:[], payments:[]
 });
 let S;
@@ -654,13 +654,17 @@ SCREENS.settings = () => {
       <button class="btn soft block" data-act="loadLLM" ${gpu?'':'disabled'}>${llm.engine?'Model ready':'Download and load model'}</button>
       <div id="llmStatus" class="hint" style="margin:8px 4px 0">${esc(llm.status||'')}</div><div class="progress"><i id="llmBar" style="width:${(llm.progress||0)*100}%"></i></div><div style="height:12px"></div>`:''}
   </div>
+  <div class="form-card"><div class="fc-title">${I.spark} New school year</div>
+    <p class="hint" style="margin:-6px 4px 12px">Every January, Tutorbook suggests each student’s next level (P5 to P6, P6 to S1 and so on) for you to check before anything changes.</p>
+    <button class="set-row" style="width:100%;padding:4px 4px 12px" data-act="toggleAutoLevel"><div style="flex:1;text-align:left"><b>Suggest new levels in January</b></div><span class="pill ${st.autoLevel!==false?'mint':''}">${st.autoLevel!==false?'On':'Off'}</span></button>
+    <button class="btn soft block" style="margin-bottom:14px" data-act="reviewLevels">Move students up a level now</button></div>
   <div class="card" style="margin-bottom:12px"><div class="fc-title" style="padding:14px 16px 0;margin-bottom:6px">${I.book} Your data</div><p class="hint" style="margin:0 16px 6px">Everything is stored only on this phone. Export a backup now and then.</p>
     <button class="set-row" style="width:100%" data-act="exportData"><span class="ic brand">${I.download}</span><div class="grow" style="flex:1;text-align:left"><b>Export backup</b></div>${I.chev}</button>
     <button class="set-row" style="width:100%" data-act="importData"><span class="ic brand">${I.upload}</span><div style="flex:1;text-align:left"><b>Restore from backup</b></div>${I.chev}</button>
     <button class="set-row" style="width:100%" data-act="exportIcs"><span class="ic mint">${I.cal}</span><div style="flex:1;text-align:left"><b>Export to Apple Calendar</b></div>${I.chev}</button>
     <button class="set-row" style="width:100%" data-act="loadSample"><span class="ic amber">${I.spark}</span><div style="flex:1;text-align:left"><b>Add sample data</b></div>${I.chev}</button>
     <button class="set-row" style="width:100%" data-act="wipe"><span class="ic coral">${I.trash}</span><div style="flex:1;text-align:left;color:var(--coral)"><b>Erase everything</b></div></button></div>
-  <p class="muted small" style="text-align:center;margin-top:18px">Tutorbook 1.2, ${S.students.length} students, ${S.lessons.length} lessons</p>`;
+  <p class="muted small" style="text-align:center;margin-top:18px">Tutorbook 1.3, ${S.students.length} students, ${S.lessons.length} lessons</p>`;
 };
 
 /* ---------- Sheets ---------- */
@@ -1067,6 +1071,37 @@ function composeSheet(lid, sid){
   $('#sendWA',w).addEventListener('click', ()=>{ openWA(s.parentPhone, box.value); l.sent=l.sent||{}; l.sent[sid]=true; save(); setTimeout(()=>{ closeSheet(); refresh(); toast('Marked as sent'); },500); });
 }
 
+/* ---------- New school year: move students up a level ---------- */
+function nextLevel(lv){ const t=String(lv||'').trim(); let m;
+  const simple = {N1:'N2', N2:'K1', K1:'K2', K2:'P1'}; if(simple[t.toUpperCase()]) return simple[t.toUpperCase()];
+  if((m=t.match(/^(?:p|pri|primary)\s*([1-6])$/i))) return +m[1]<6 ? `P${+m[1]+1}` : 'S1';
+  if((m=t.match(/^(?:s|sec|secondary)\s*([1-5])$/i))) return +m[1]<4 ? `S${+m[1]+1}` : null;
+  if(/^jc\s*1$/i.test(t)) return 'JC2';
+  return null; }
+function levelSheet(year){
+  const list = S.students.filter(s=>s.active!==false).sort((a,b)=>a.name.localeCompare(b.name));
+  if(!list.length){ S.settings.levelYear=year; save(); return; }
+  openSheet(()=>({ html:`<div class="card pad" style="margin-bottom:14px;border-color:var(--gold-line)"><div class="fc-title" style="margin-bottom:6px">${I.spark} Welcome to ${year}</div><p class="sub" style="margin:0">It’s a new school year. Check each student’s new level, then tap Update levels. Their lessons from 1 January onwards are updated too.</p></div>
+    <form id="lvlForm">${list.map(s=>{ const n=nextLevel(s.level); return `<div class="card" style="margin-bottom:10px"><div class="row" style="align-items:center">${avatar(s)}<div class="grow"><div class="t">${esc(s.name)}</div><div class="d">Now ${esc(s.level||'no level')}${s.subject?', '+esc(s.subject):''}</div></div>
+      <label class="chip" style="padding:6px 11px"><input type="checkbox" name="inc" value="${s.id}" ${n?'checked':''}>Update</label></div>
+      <div style="padding:0 14px 12px;display:flex;align-items:center;gap:10px"><span class="muted small" style="white-space:nowrap">New level</span><input class="input" name="lv_${s.id}" list="lvlNY" value="${esc(n||s.level||'')}" style="padding:9px 12px">${n?'':'</div><p class="hint" style="margin:-4px 14px 12px">Type their next level (for example JC1, Poly or S5), or leave it unticked.</p><div hidden>'}</div></div>`; }).join('')}
+    <datalist id="lvlNY">${['N1','N2','K1','K2','P1','P2','P3','P4','P5','P6','S1','S2','S3','S4','S5','JC1','JC2','Poly','ITE','Adult'].map(x=>`<option value="${x}">`).join('')}</datalist></form>`,
+    foot:`<div class="btns"><button class="btn ghost" data-act="skipLevels" data-id="${year}">Skip this year</button><button class="btn" data-act="applyLevels" data-id="${year}">Update levels</button></div>` }), 'New school year', true);
+  const f=$('#lvlForm',topWrap()); f.addEventListener('input', e=>{ if(e.target.name?.startsWith('lv_')){ const cb=f.querySelector(`input[name=inc][value="${e.target.name.slice(3)}"]`); if(cb) cb.checked=!!e.target.value.trim(); } });
+}
+function applyLevels(year){
+  const f=$('#lvlForm',topWrap()); const fd=new FormData(f); const ids=fd.getAll('inc'); let n=0;
+  ids.forEach(id=>{ const s=stu(id); const lv=(fd.get('lv_'+id)||'').trim(); if(!s||!lv||lv===s.level) return;
+    s.level=lv; n++;
+    S.lessons.forEach(l=>{ if(l.date>=`${year}-01-01` && l.studentIds.length===1 && l.studentIds[0]===id && l.status!=='done') l.level=lv; }); });
+  S.settings.levelYear=year; save(); closeSheet(); refresh(); toast(n?`${n} student${n>1?'s':''} moved up a level`:'Levels unchanged');
+}
+function checkNewYear(){
+  const y=new Date().getFullYear();
+  if(!S.settings.levelYear){ S.settings.levelYear=y; save(); return; }
+  if(S.settings.autoLevel!==false && y>S.settings.levelYear && !stack.some(e=>e.title==='New school year')) levelSheet(y);
+}
+
 /* ---------- Actions ---------- */
 const ACT = {
   tab: d => { view.tab=d.id; render(); window.scrollTo(0,0); },
@@ -1085,6 +1120,10 @@ const ACT = {
   openStudent: d => studentSheet(d.id),
   payStudent: d => paySheet(d.id, d.m),
   compose: d => composeSheet(d.id, d.sid),
+  applyLevels: d => applyLevels(+d.id),
+  skipLevels: d => { S.settings.levelYear=+d.id; save(); closeSheet(); toast('Levels left as they are'); },
+  reviewLevels: () => levelSheet(new Date().getFullYear()),
+  toggleAutoLevel: () => { S.settings.autoLevel = S.settings.autoLevel===false; save(); render(); },
   waFee: d => { const s=stu(d.id); openWA(s.parentPhone, feeReminder(s, d.m)); (s.reminded=s.reminded||{})[d.m]=today(); save(); setTimeout(refresh,400); },
   waBlank: d => { const s=stu(d.id); openWA(s.parentPhone, s.parentName?`Hi ${s.parentName}, `:'Hi, '); },
   att: d => { const l=lessonById(d.id); l.attendance=l.attendance||{}; l.attendance[d.sid] = l.attendance[d.sid]===d.v ? undefined : d.v; save(); refresh(); },
@@ -1184,6 +1223,8 @@ function loadSample(){
 
 /* ---------- Boot ---------- */
 render();
+checkNewYear();
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden){ render(); checkNewYear(); } });
 if('serviceWorker' in navigator && location.protocol==='https:') navigator.serviceWorker.register('sw.js').catch(()=>{});
 </script>
 </body>
