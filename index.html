@@ -389,17 +389,48 @@ function upcomingExams(sid, from, within){
 /* Fees */
 function feeDue(s, m){
   if(!s.rate) return 0;
-  if(s.rateType==='month') return +s.rate;
+  if(s.rateType==='month') return S.lessons.some(l=>l.studentIds.includes(s.id) && ym(l.date)===m && l.status!=='cancelled') ? +s.rate : 0;
   const n = S.lessons.filter(l=>l.studentIds.includes(s.id) && ym(l.date)===m && l.status!=='cancelled' && (l.attendance?.[s.id]!=='absent')).length;
   return n*(+s.rate);
 }
 const feePaid = (sid,m) => S.payments.filter(p=>p.studentId===sid && p.month===m).reduce((a,p)=>a+(+p.amount||0),0);
+const payPlan = s => Object.assign({type:'day', day:1, when:'same'}, s.pay||{});
+function feeDueDate(s, m){
+  const p = payPlan(s);
+  if(p.type==='first' || p.type==='last'){
+    const ls = S.lessons.filter(l=>l.studentIds.includes(s.id) && ym(l.date)===m && l.status!=='cancelled').sort(sortL);
+    const l = p.type==='first' ? ls[0] : ls[ls.length-1]; return l ? l.date : null;
+  }
+  const mm = p.when==='next' ? addMonths(m,1) : m; const [y,mo] = mm.split('-').map(Number);
+  return `${mm}-${pad(Math.min(Math.max(1,+p.day||1), new Date(y,mo,0).getDate()))}`;
+}
+const ordinal = n => n + (n%100>=11&&n%100<=13 ? 'th' : ({1:'st',2:'nd',3:'rd'})[n%10]||'th');
+function planLabel(s){ const p=payPlan(s);
+  if(p.type==='first') return 'at the first lesson of the month';
+  if(p.type==='last') return 'at the last lesson of the month';
+  return `on the ${ordinal(+p.day||1)}${p.when==='next'?' of the following month':''}`; }
 function feeStatus(s,m){
-  const due=feeDue(s,m), paid=feePaid(s.id,m);
-  if(due<=0 && paid<=0) return {key:'none',label:'No fees',cls:'',due,paid};
-  if(paid>=due) return {key:'paid',label:'Paid',cls:'ok',due,paid};
-  if(paid>0) return {key:'part',label:`Part paid`,cls:'warn',due,paid};
-  return {key:'unpaid',label:'Unpaid',cls:'bad',due,paid};
+  const due=feeDue(s,m), paid=feePaid(s.id,m), dueDate=feeDueDate(s,m);
+  const b = {due, paid, dueDate, days: dueDate ? daysBetween(today(), dueDate) : null};
+  if(due<=0 && paid<=0) return {...b, key:'none', label:'No fees'};
+  if(paid>=due) return {...b, key:'paid', label:'Paid'};
+  if(b.days!==null && b.days<0) return {...b, key:'overdue', label:'Overdue'};
+  if(paid>0) return {...b, key:'part', label:'Part paid'};
+  const short = d => { const x=pd(d); return `${x.getDate()} ${MON[x.getMonth()]}`; };
+  return {...b, key:'unpaid', label: dueDate ? (b.days===0?'Due today':b.days===1?'Due tomorrow':`Due ${short(dueDate)}`) : 'Unpaid'};
+}
+const owing = f => ['unpaid','part','overdue'].includes(f.key);
+const feePill = f => f.key==='none' ? '' : `<span class="pill ${f.key==='paid'?'mint':f.key==='overdue'?'coral':f.key==='part'||(f.days!==null&&f.days<=3)?'amber':''}">${f.key==='paid'?I.check:''}${f.label}</span>`;
+const dueWords = f => { if(!f.dueDate) return 'are due'; const x=pd(f.dueDate), dm=`${x.getDate()} ${MONL[x.getMonth()]}`;
+  return f.days<0 ? `were due on ${dm}` : f.days===0 ? 'are due today' : f.days===1 ? 'are due tomorrow' : `are due on ${dm}`; };
+function feeReminder(s, m){
+  const f = feeStatus(s,m), owe = f.due-f.paid, mon = MONL[+m.slice(5)-1];
+  const n = s.rateType!=='month' && s.rate ? Math.round(f.due/s.rate) : 0;
+  const out = [s.parentName?`Hi ${s.parentName},`:'Hi,',
+    `A gentle reminder that ${firstName(s.name)}'s tuition fees for ${mon}${n?` (${n} lesson${n>1?'s':''} at ${money(s.rate)})`:''} ${dueWords(f)}. The amount ${f.paid>0?'remaining ':''}is ${money(owe)}${f.paid>0?`, as ${money(f.paid)} has been received`:''}.`,
+    'Thank you!'];
+  const sign = S.settings.signOff || S.settings.tutorName; if(sign) out.push(sign);
+  return out.join('\n\n');
 }
 
 /* ---------- Subjects ---------- */
@@ -486,6 +517,7 @@ const until = l => { const now=new Date(); const s=pd(l.date); const [h,m]=l.sta
 const greeting = () => { const h=new Date().getHours(); return h<12?'Good morning':h<18?'Good afternoon':'Good evening'; };
 const weekStart = d => { const x=pd(d); return addDays(d, -((x.getDay()+6)%7)); };
 
+function feesDueOn(d){ const out=[]; S.students.filter(s=>s.active!==false && s.rate).forEach(s=>[ym(d), addMonths(ym(d),-1)].forEach(m=>{ const f=feeStatus(s,m); if(f.dueDate===d && f.key!=='none') out.push({s,m,f}); })); return out; }
 /* ---------- Screens ---------- */
 const SCREENS = {};
 SCREENS.home = () => {
@@ -521,6 +553,8 @@ SCREENS.home = () => {
 
   // To do
   const todo = [];
+  S.students.filter(s=>s.active!==false).forEach(s=>[addMonths(ym(t),-1), ym(t)].forEach(m=>{ const f=feeStatus(s,m); if(!owing(f) || f.days===null || f.days>3) return;
+    todo.push(`<button class="row" data-act="payStudent" data-id="${s.id}" data-m="${m}"><span class="ic ${f.key==='overdue'?'coral':'amber'}">${I.money}</span><div class="grow"><div class="t">${esc(s.name)}: ${money(f.due-f.paid)}</div><div class="d">${MON[+m.slice(5)-1]} fees, ${f.key==='overdue'?`overdue since ${pd(f.dueDate).getDate()} ${MON[pd(f.dueDate).getMonth()]}`:f.days===0?'due today':f.days===1?'due tomorrow':`due ${pd(f.dueDate).getDate()} ${MON[pd(f.dueDate).getMonth()]}`}</div></div><span class="cta" style="${f.key==='overdue'?'background:var(--coral-soft);color:var(--coral)':'background:var(--amber-soft);color:var(--amber)'}">Collect</span></button>`); }));
   S.lessons.filter(l=>l.status==='scheduled' && isPast(l) && daysBetween(l.date,t)<=21).sort(sortL).reverse().slice(0,5).forEach(l=>
     todo.push(`<button class="row" data-act="openLesson" data-id="${l.id}"><span class="ic amber">${I.note}</span><div class="grow"><div class="t">${esc(lessonTitle(l))}</div><div class="d">${esc(fmtDate(l.date))}, ${fmtTime(l.start)}: attendance and notes missing</div></div><span class="cta">Add notes</span></button>`));
   S.lessons.filter(l=>l.status==='done' && daysBetween(l.date,t)<=10).sort(sortL).reverse().forEach(l=>l.studentIds.forEach(id=>{ const s=stu(id); if(!s || (l.sent||{})[id] || (l.attendance||{})[id]==='absent' || todo.length>=8) return;
@@ -553,11 +587,14 @@ SCREENS.calendar = () => {
   h += `<div class="cal"><div class="cal-top"><h2>${fmtMonth(view.calMonth)}</h2><div class="arrows" style="display:flex;gap:6px"><button class="mini-btn" data-act="calNav" data-id="-1" aria-label="Previous month">${I.left}</button><button class="mini-btn" data-act="calToday" aria-label="Today" style="width:auto;padding:0 10px;font-weight:700;font-size:13.5px">Today</button><button class="mini-btn" data-act="calNav" data-id="1" aria-label="Next month">${I.right}</button></div></div><div class="cal-grid">${['M','T','W','T','F','S','S'].map(d=>`<div class="cal-dow">${d}</div>`).join('')}`;
   for(let i=0;i<42;i++){ const d=addDays(start,i); const ls=lessonsOn(d).filter(l=>l.status!=='cancelled');
     if(i===35 && ym(d)!==view.calMonth) break;
-    h += `<button class="day ${ym(d)!==view.calMonth?'out':''} ${d===t?'today':''} ${d===view.calDay?'sel':''}" data-act="calDay" data-id="${d}" aria-label="${fmtDate(d,true)}, ${ls.length} lessons"><span class="n">${pd(d).getDate()}</span><span class="dots">${ls.slice(0,3).map(l=>`<i style="--c:${subjectColor(l.subject)}"></i>`).join('')}</span></button>`; }
-  h += `</div></div>`;
+    const feeDay = feesDueOn(d).length;
+    h += `<button class="day ${ym(d)!==view.calMonth?'out':''} ${d===t?'today':''} ${d===view.calDay?'sel':''}" data-act="calDay" data-id="${d}" aria-label="${fmtDate(d,true)}, ${ls.length} lessons"><span class="n">${pd(d).getDate()}</span><span class="dots">${ls.slice(0,3).map(l=>`<i style="--c:${subjectColor(l.subject)}"></i>`).join('')}${feeDay?'<i style="--c:var(--sun);border-radius:1px"></i>':''}</span></button>`; }
+  h += `</div></div><p class="muted small" style="margin:8px 6px 0">Coloured dots are lessons. A yellow square marks a fee due date.</p>`;
   const ls = lessonsOn(view.calDay);
   h += `<div class="sec"><h2>${view.calDay===t?'Today':esc(fmtDate(view.calDay,true))}</h2><button class="link" data-act="newLesson" data-date="${view.calDay}">${I.plus} Add</button></div>`;
   h += ls.length ? ls.map(l=>lessonCard(l)).join('') : `<div class="soft-empty">Free day. Tap “Add” to schedule a lesson.</div>`;
+  const fd = feesDueOn(view.calDay);
+  if(fd.length) h += `<div class="sec"><h2>Fees due</h2></div><div class="card">${fd.map(({s,m,f})=>`<button class="row" data-act="payStudent" data-id="${s.id}" data-m="${m}"><span class="ic ${f.key==='paid'?'mint':f.key==='overdue'?'coral':'amber'}">${I.money}</span><div class="grow"><div class="t">${esc(s.name)}</div><div class="d">${MONL[+m.slice(5)-1]} fees, ${money(f.due)}</div></div>${feePill(f)}</button>`).join('')}</div>`;
   return h;
 };
 
@@ -570,7 +607,7 @@ SCREENS.students = () => {
   const card = s => { const nl=nextLessonFor(s.id); const f=feeStatus(s,ym(today()));
     return `<button class="scard" data-act="openStudent" data-id="${s.id}" data-q="${esc((s.name+' '+s.level+' '+s.subject+' '+(s.location||'')+' '+(s.parentName||'')).toLowerCase())}">${avatar(s)}<div class="grow"><div class="t">${esc(s.name)}</div>
       <div class="meta"><span><i class="sdot" style="--c:${subjectColor(s.subject)}"></i>${esc([s.level,s.subject].filter(Boolean).join(' '))}</span>${nl?`<span>${I.clock}${esc(fmtDate(nl.date))}, ${fmtTime(nl.start)}</span>`:''}</div></div>
-      ${f.key==='unpaid'||f.key==='part'?`<span class="pill ${f.key==='part'?'amber':'coral'}">${f.label}</span>`:''}${I.chev}</button>`; };
+      ${owing(f)?feePill(f):''}${I.chev}</button>`; };
   h += `<div id="slist">${act.map(card).join('')}</div>`;
   if(old.length) h += `<div class="sec"><h2>Past students</h2></div><div id="slist2">${old.map(card).join('')}</div>`;
   return h;
@@ -579,15 +616,16 @@ SCREENS.students = () => {
 SCREENS.payments = () => {
   const m = view.payMonth;
   const list = S.students.filter(s=>s.active!==false || S.payments.some(p=>p.studentId===s.id&&p.month===m)).sort((a,b)=>a.name.localeCompare(b.name));
-  const fs = list.map(s=>({s,f:feeStatus(s,m)}));
-  const due = fs.reduce((a,x)=>a+x.f.due,0), got = fs.reduce((a,x)=>a+x.f.paid,0);
+  const RANK={overdue:0,unpaid:1,part:2,none:4,paid:3};
+  const fs = list.map(s=>({s,f:feeStatus(s,m)})).sort((a,b)=>RANK[a.f.key]-RANK[b.f.key] || (a.f.dueDate||'9').localeCompare(b.f.dueDate||'9') || a.s.name.localeCompare(b.s.name));
+  const due = fs.reduce((a,x)=>a+x.f.due,0), got = fs.reduce((a,x)=>a+x.f.paid,0), od = fs.filter(x=>x.f.key==='overdue').length;
   let h = `<div class="topbar"><h1>Fees</h1></div>
   <section class="hero" style="padding-bottom:20px"><div style="display:flex;justify-content:space-between;align-items:center"><button class="mini-btn" style="background:rgba(255,255,255,.18);color:#fff;box-shadow:none" data-act="payNav" data-id="-1" aria-label="Previous month">${I.left}</button><div class="date" style="font-size:16px">${fmtMonth(m)}</div><button class="mini-btn" style="background:rgba(255,255,255,.18);color:#fff;box-shadow:none" data-act="payNav" data-id="1" aria-label="Next month">${I.right}</button></div>
-    <div class="big" style="text-align:center;margin-top:14px;font-size:36px">${money(got)}</div><div class="line" style="text-align:center">collected of ${money(due)} expected</div>
+    <div class="big" style="text-align:center;margin-top:14px;font-size:36px">${money(got)}</div><div class="line" style="text-align:center">collected of ${money(due)} expected${od?`, ${od} overdue`:''}</div>
     <div class="bar" style="margin-top:16px"><i class="on" style="flex:${Math.max(0.001,Math.min(got,due))}"></i><i style="flex:${Math.max(0.001,due-got)}"></i></div></section>`;
   if(!list.length) return h + `<div class="soft-empty" style="margin-top:16px">Add students with a fee to track payments here.</div>`;
   h += `<div class="sec"><h2>Students</h2><span class="sub small">Tap to record a payment</span></div>`;
-  h += fs.map(({s,f})=>`<button class="scard" data-act="payStudent" data-id="${s.id}">${avatar(s)}<div class="grow"><div class="t">${esc(s.name)}</div><div class="sub small">${f.due?`${money(f.paid)} of ${money(f.due)}`:(s.rate?'No lessons this month':'No fee set')}${s.rate?(s.rateType==='month'?', monthly':`, ${money(s.rate)} per lesson`):''}</div></div>${f.key!=='none'?`<span class="pill ${({paid:'mint',part:'amber',unpaid:'coral'})[f.key]}">${f.key==='paid'?I.check:''}${f.label}</span>`:''}</button>`).join('');
+  h += fs.map(({s,f})=>`<button class="scard" data-act="payStudent" data-id="${s.id}">${avatar(s)}<div class="grow"><div class="t">${esc(s.name)}</div><div class="sub small">${f.due?`${money(f.paid)} of ${money(f.due)}`:(s.rate?'No lessons this month':'No fee set')}${s.rate?(s.rateType==='month'?', monthly':`, ${money(s.rate)} per lesson`):''}</div>${s.rate?`<div class="muted small">Pays ${esc(planLabel(s))}${f.dueDate&&f.key!=='paid'?` (${esc(fmtDate(f.dueDate))})`:''}</div>`:''}</div>${feePill(f)}</button>`).join('');
   return h + `<p class="muted small" style="margin:10px 6px">Per-lesson fees count this month’s lessons, leaving out cancelled lessons and absences.</p>`;
 };
 
@@ -657,7 +695,7 @@ function quickAdd(){
 }
 function pickPay(){
   openSheet(()=>S.students.filter(s=>s.active!==false).sort((a,b)=>a.name.localeCompare(b.name)).map(s=>{ const f=feeStatus(s,ym(today()));
-    return `<button class="scard" data-act="payStudent" data-id="${s.id}">${avatar(s)}<div class="grow"><div class="t">${esc(s.name)}</div><div class="sub small">${f.due?`${money(f.paid)} of ${money(f.due)} this month`:'Nothing due this month'}</div></div>${f.key!=='none'?`<span class="pill ${({paid:'mint',part:'amber',unpaid:'coral'})[f.key]}">${f.label}</span>`:''}</button>`; }).join(''), 'Who paid?');
+    return `<button class="scard" data-act="payStudent" data-id="${s.id}">${avatar(s)}<div class="grow"><div class="t">${esc(s.name)}</div><div class="sub small">${f.due?`${money(f.paid)} of ${money(f.due)} this month`:'Nothing due this month'}</div></div>${feePill(f)}</button>`; }).join(''), 'Who paid?');
 }
 
 /* Lesson detail */
@@ -791,13 +829,24 @@ function studentForm(id){
     <div class="form-card"><div class="fc-title">${I.money} Fees</div>
       <div class="grid2"><label class="field"><span>Amount (${esc(S.settings.currency)})</span><input class="input" type="number" inputmode="decimal" step="any" name="rate" value="${esc(v.rate)}"></label>
       <div class="field"><span>Charged</span><div class="chips"><label class="chip"><input type="radio" name="rateType" value="lesson" ${v.rateType!=='month'?'checked':''}>Per lesson</label><label class="chip"><input type="radio" name="rateType" value="month" ${v.rateType==='month'?'checked':''}>Monthly</label></div></div></div>
+      <span class="label" style="margin-top:0">Payment due</span>
+      <div class="chips" style="margin-bottom:12px">${[['day','On a set day'],['first','At first lesson of the month'],['last','At last lesson of the month']].map(([k,lab])=>`<label class="chip"><input type="radio" name="payType" value="${k}" ${payPlan(v).type===k?'checked':''}>${lab}</label>`).join('')}</div>
+      <div id="payDayBox" ${payPlan(v).type!=='day'?'hidden':''}><div class="grid2"><label class="field"><span>Day of the month</span><input class="input" type="number" inputmode="numeric" min="1" max="31" name="payDay" value="${payPlan(v).day}"></label>
+        <div class="field"><span>Each month’s fees are paid</span><div class="chips"><label class="chip"><input type="radio" name="payWhen" value="same" ${payPlan(v).when!=='next'?'checked':''}>That month</label><label class="chip"><input type="radio" name="payWhen" value="next" ${payPlan(v).when==='next'?'checked':''}>Next month</label></div></div></div></div>
+      <p class="hint" id="payHint"></p>
       ${s?`<label class="chip" style="margin-bottom:14px"><input type="checkbox" name="active" ${v.active!==false?'checked':''}>Currently teaching</label>`:''}</div>
     <datalist id="lvl2">${['N1','N2','K1','K2','P1','P2','P3','P4','P5','P6','S1','S2','S3','S4','S5','JC1','JC2','Adult'].map(x=>`<option value="${x}">`).join('')}</datalist>
     <datalist id="sub2">${['Math','A-Math','E-Math','Science','English','Chinese','Programming'].map(x=>`<option value="${x}">`).join('')}</datalist>
     <button class="btn block" type="submit">${s?'Save changes':'Add student'}</button>
     ${s?`<button class="textlink" type="button" data-act="deleteStudent" data-id="${s.id}">Delete student</button>`:''}</form>`, s?'Edit student':'New student', true);
-  $('#stForm', topWrap()).addEventListener('submit', e=>{ e.preventDefault(); const fd=new FormData(e.target);
-    const d = {}; ['name','level','subject','school','location','parentName','parentPhone','rateType'].forEach(k=>d[k]=(fd.get(k)||'').trim()); d.rate = fd.get('rate')===''?'':+fd.get('rate');
+  const sf = $('#stForm', topWrap());
+  const hint = () => { const fd=new FormData(sf); const type=fd.get('payType')||'day'; const m=ym(today()); const day=Math.min(31,Math.max(1,+fd.get('payDay')||1)); const when=fd.get('payWhen');
+    $('#payDayBox',sf).hidden = type!=='day';
+    $('#payHint',sf).textContent = type==='first' ? `Example: ${MONL[+m.slice(5)-1]} fees are due at the first ${MONL[+m.slice(5)-1]} lesson.` : type==='last' ? `Example: ${MONL[+m.slice(5)-1]} fees are due at the last ${MONL[+m.slice(5)-1]} lesson.`
+      : `Example: ${MONL[+m.slice(5)-1]} fees are due on ${day} ${MONL[+(when==='next'?addMonths(m,1):m).slice(5)-1]}.${day>28?' In shorter months, the last day of the month is used.':''}`; };
+  sf.addEventListener('input', hint); sf.addEventListener('change', hint); hint();
+  sf.addEventListener('submit', e=>{ e.preventDefault(); const fd=new FormData(e.target);
+    const d = { pay: { type: fd.get('payType')||'day', day: Math.min(31,Math.max(1,+fd.get('payDay')||1)), when: fd.get('payWhen')||'same' } }; ['name','level','subject','school','location','parentName','parentPhone','rateType'].forEach(k=>d[k]=(fd.get(k)||'').trim()); d.rate = fd.get('rate')===''?'':+fd.get('rate');
     if(s){ d.active = !!fd.get('active'); Object.assign(s,d); toast('Student saved'); }
     else { S.students.push({id:uid(), ...d, active:true, learning:'', notes:'', exams:[]}); toast(`${d.name} added`); }
     save(); closeSheet(); if(stack.length && stack[stack.length-1].title==='Add') closeSheet(); refresh();
@@ -812,7 +861,7 @@ function studentSheet(id){
     const past = all.filter(l=>l.date<=t && l.status==='done').reverse().slice(0,6);
     const months = [0,-1,-2].map(n=>addMonths(ym(t),n));
     let h = `<div class="s-hero" style="--c:${c}"><div style="display:flex;gap:14px;align-items:center">${avatar(s,'lg')}<div style="min-width:0"><h2 style="margin:0">${esc(s.name)}</h2><div style="opacity:.9">${esc([s.level,s.subject].filter(Boolean).join(' '))}${s.school?', '+esc(s.school):''}</div></div></div>
-      <div class="kv" style="margin-top:14px">${s.parentName||s.parentPhone?`<span>${I.phone}${esc([s.parentName,s.parentPhone].filter(Boolean).join(', '))}</span>`:''}${s.location?`<span>${I.pin}${esc(s.location)}</span>`:''}${s.rate?`<span>${I.money}${money(s.rate)} per ${s.rateType==='month'?'month':'lesson'}</span>`:''}</div></div>
+      <div class="kv" style="margin-top:14px">${s.parentName||s.parentPhone?`<span>${I.phone}${esc([s.parentName,s.parentPhone].filter(Boolean).join(', '))}</span>`:''}${s.location?`<span>${I.pin}${esc(s.location)}</span>`:''}${s.rate?`<span>${I.money}${money(s.rate)} per ${s.rateType==='month'?'month':'lesson'}, paid ${esc(planLabel(s))}</span>`:''}</div></div>
       <div class="tiles"><button class="tile wa" data-act="waBlank" data-id="${s.id}">${I.wa}WhatsApp</button><button class="tile" data-act="newLesson" data-sid="${s.id}">${I.cal}Schedule</button><button class="tile" data-act="payStudent" data-id="${s.id}">${I.money}Fees</button><button class="tile" data-act="editStudent" data-id="${s.id}">${I.edit}Edit</button></div>
       <span class="label">Currently learning</span>
       <textarea class="input" rows="2" data-sbind="${s.id}.learning" placeholder="e.g. Multiplication tables; building the model drawing habit">${esc(s.learning)}</textarea>
@@ -824,7 +873,7 @@ function studentSheet(id){
       <span class="label">Recent lesson notes</span>
       <div class="card">${past.length? past.map(l=>{const a=l.attendance?.[s.id]; return `<button class="row" style="align-items:flex-start" data-act="openLesson" data-id="${l.id}"><span class="ic ${a==='absent'?'coral':a==='late'?'amber':'mint'}">${a==='absent'?I.absent:a==='late'?I.late:I.check}</span><div class="grow"><div class="t">${esc(fmtDate(l.date,true))}</div><div class="sub small" style="white-space:pre-wrap;margin-top:2px">${esc((l.covered||'No notes').split('\n').slice(0,3).join('\n'))}</div></div></button>`;}).join('') : `<div class="soft-empty" style="border:0">Notes from completed lessons appear here.</div>`}</div>
       <span class="label">Fees</span>
-      <div class="card">${months.map(m=>{const f=feeStatus(s,m); return `<button class="row" data-act="payStudent" data-id="${s.id}" data-m="${m}"><div class="grow"><div class="t">${fmtMonth(m)}</div><div class="d">${f.due||f.paid?`${money(f.paid)} of ${money(f.due)}`:'Nothing due'}</div></div>${f.key!=='none'?`<span class="pill ${({paid:'mint',part:'amber',unpaid:'coral'})[f.key]}">${f.label}</span>`:''}</button>`;}).join('')}</div>
+      <div class="card">${months.map(m=>{const f=feeStatus(s,m); return `<button class="row" data-act="payStudent" data-id="${s.id}" data-m="${m}"><div class="grow"><div class="t">${fmtMonth(m)}</div><div class="d">${f.due||f.paid?`${money(f.paid)} of ${money(f.due)}${f.dueDate&&f.key!=='paid'?`, due ${esc(fmtDate(f.dueDate))}`:''}`:'Nothing due'}</div></div>${feePill(f)}</button>`;}).join('')}</div>
       <span class="label">Private notes</span>
       <textarea class="input" rows="3" data-sbind="${s.id}.notes" placeholder="Anything else to remember">${esc(s.notes)}</textarea>`;
     return {html:h, hero:true};
@@ -837,7 +886,8 @@ function paySheet(sid, m){
   openSheet(()=>{
     const s = stu(sid); const f = feeStatus(s,m);
     const ps = S.payments.filter(p=>p.studentId===sid && p.month===m);
-    return `<div class="card pad" style="margin-bottom:12px;display:flex;align-items:center;gap:12px">${avatar(s)}<div style="flex:1"><div style="font-weight:700">${esc(s.name)}, ${fmtMonth(m)}</div><div class="sub small">${money(f.paid)} paid of ${money(f.due)}</div></div>${f.key!=='none'?`<span class="pill ${({paid:'mint',part:'amber',unpaid:'coral'})[f.key]}">${f.label}</span>`:''}</div>
+    return `<div class="card pad" style="margin-bottom:12px;display:flex;align-items:center;gap:12px">${avatar(s)}<div style="flex:1"><div style="font-weight:700">${esc(s.name)}, ${fmtMonth(m)}</div><div class="sub small">${money(f.paid)} paid of ${money(f.due)}</div><div class="muted small">${f.dueDate?`Due ${esc(fmtDate(f.dueDate,true))}`:'Due '+esc(planLabel(s))+' (no lessons yet)'}</div></div>${feePill(f)}</div>
+      ${owing(f)?`<button class="btn wa block" style="margin-bottom:12px" data-act="waFee" data-id="${sid}" data-m="${m}">${I.wa} Send fee reminder on WhatsApp</button>${(s.reminded||{})[m]?`<p class="hint" style="margin:-4px 4px 12px;text-align:center">Last reminder sent ${esc(fmtDate(s.reminded[m]))}</p>`:''}`:''}
       ${ps.length?`<div class="card" style="margin-bottom:12px">${ps.map(p=>`<div class="row"><span class="ic mint">${I.check}</span><div class="grow"><div class="t">${money(p.amount)} by ${esc(p.method)}</div><div class="d">${esc(fmtDate(p.date))}${p.note?', '+esc(p.note):''}</div></div><button class="mini-btn" style="box-shadow:none" data-act="delPay" data-id="${p.id}" aria-label="Delete payment">${I.x}</button></div>`).join('')}</div>`:''}
       <form id="payForm" data-sid="${sid}"><div class="form-card"><div class="fc-title">${I.money} Record a payment</div>
       <div class="grid2"><label class="field"><span>Amount (${esc(S.settings.currency)})</span><input class="input" type="number" inputmode="decimal" step="any" name="amount" value="${Math.max(0,f.due-f.paid)||''}" required></label><label class="field"><span>Paid on</span><input class="input" type="date" name="date" value="${today()}" required></label></div>
@@ -882,7 +932,7 @@ function composeReport(l, sid, o){
   if(o.exam){ const ex=upcomingExams(sid,l.date>today()?l.date:today(),60)[0]; if(ex) ahead.push(`${ex.title} is on ${fmtDate(ex.date,true)} (${ex.days===0?'today':ex.days===1?'tomorrow':ex.days+' days away'}), and we will keep revising in preparation for it`); }
   if(ahead.length) out.push(H('Looking Ahead')+'\n'+bl(ahead));
   if(o.remarks && lines(l.remarks).length) out.push(H('Additional Notes')+'\n'+lines(l.remarks).map(sentence).join(' '));
-  if(o.payment){ const m=ym(l.date), f=feeStatus(s,m), owe=f.due-f.paid; if(owe>0) out.push(H('Fees')+'\n'+`A gentle reminder that the fees for ${MONL[+m.slice(5)-1]} (${money(owe)}) are due. Thank you!`); }
+  if(o.payment){ const m=ym(l.date), f=feeStatus(s,m), owe=f.due-f.paid; if(owe>0) out.push(H('Fees')+'\n'+`A gentle reminder that the fees for ${MONL[+m.slice(5)-1]} (${money(owe)}) ${dueWords(f)}. Thank you!`); }
   out.push('Please do not hesitate to contact me should you have any questions or concerns.');
   const sign = S.settings.signOff || S.settings.tutorName; if(sign) out.push(sign);
   return out.join('\n\n');
@@ -933,7 +983,7 @@ function compose(lesson, sid, o){
   if(o.ahead && lesson.ahead && a!=='absent') body.push(tone==='brief' ? `• Looking ahead: ${items(lesson.ahead,1).join('; ')}` : `Looking ahead, ${items(lesson.ahead).join('; ')}.`);
   if(o.remarks && lesson.remarks) body.push((tone==='brief'?'• ':'') + lesson.remarks.trim());
   if(o.payment){ const m=ym(lesson.date); const f=feeStatus(s,m); const owe=f.due-f.paid; if(owe>0)
-    body.push(tone==='pro' ? `Kindly note that the fees for ${MONL[+m.slice(5)-1]} (${money(owe)}) are due. Thank you.` : tone==='brief' ? `• ${MONL[+m.slice(5)-1]} fees: ${money(owe)} due` : `A gentle reminder that ${MONL[+m.slice(5)-1]}'s fees of ${money(owe)} are due. Thank you!`); }
+    body.push(tone==='pro' ? `Kindly note that the fees for ${MONL[+m.slice(5)-1]} (${money(owe)}) ${dueWords(f)}. Thank you.` : tone==='brief' ? `• ${MONL[+m.slice(5)-1]} fees: ${money(owe)}${f.dueDate?`, due ${fmtDate(f.dueDate)}`:''}` : `A gentle reminder that ${MONL[+m.slice(5)-1]}'s fees of ${money(owe)} ${dueWords(f)}. Thank you!`); }
   out.push(...(tone==='brief' ? [body.join('\n')] : body));
   if(tone!=='brief') out.push(tone==='pro' ? 'Please feel free to contact me if you have any questions.' : P([`Let me know if you have any questions!`, `Feel free to reach out if you have any questions 😊`, `Thank you, and have a lovely ${partOfDay()}!`]));
   const sign = S.settings.signOff || (S.settings.tutorName ? (tone==='pro'?`Best regards,\n${S.settings.tutorName}`:`${S.settings.tutorName}`) : '');
@@ -982,7 +1032,7 @@ function composeSheet(lid, sid){
   const st = { tone:S.settings.tone, seed:1, covered:true, improve:true, homework:true, next:true, nextDate:true, ahead:true, exam:true, focus:false, remarks:false, payment:false };
   const f0 = feeStatus(s, ym(l.date)); const owe = f0.due-f0.paid;
   let edited=false;
-  const toggles = [['covered','Summary'],['improve','Improvement'],['homework','Homework'],['next','Next plan'],['nextDate','Next date'],['ahead','Looking ahead'],['exam','Exam'],['remarks','Remarks'],['payment',`Fee reminder${owe>0?` (${money(owe)})`:''}`]];
+  const toggles = [['covered','Summary'],['improve','Improvement'],['homework','Homework'],['next','Next plan'],['nextDate','Next date'],['ahead','Looking ahead'],['exam','Exam'],['remarks','Remarks'],['payment',`Fee reminder${owe>0?` (${money(owe)}${f0.dueDate?`, due ${fmtDate(f0.dueDate)}`:''})`:''}`]];
   const now = new Date();
   openSheet(()=>({ html:`<div class="seg" id="toneSeg">${[['report','Report'],['warm','Warm'],['pro','Formal'],['brief','Short']].map(([k,lab])=>`<button class="${st.tone===k?'on':''}" data-tone="${k}">${lab}</button>`).join('')}</div>
     <span class="label">Include</span>
@@ -1026,6 +1076,7 @@ const ACT = {
   openStudent: d => studentSheet(d.id),
   payStudent: d => paySheet(d.id, d.m),
   compose: d => composeSheet(d.id, d.sid),
+  waFee: d => { const s=stu(d.id); openWA(s.parentPhone, feeReminder(s, d.m)); (s.reminded=s.reminded||{})[d.m]=today(); save(); setTimeout(refresh,400); },
   waBlank: d => { const s=stu(d.id); openWA(s.parentPhone, s.parentName?`Hi ${s.parentName}, `:'Hi, '); },
   att: d => { const l=lessonById(d.id); l.attendance=l.attendance||{}; l.attendance[d.sid] = l.attendance[d.sid]===d.v ? undefined : d.v; save(); refresh(); },
   complete: d => { const l=lessonById(d.id); l.studentIds.forEach(id=>{ if(!l.attendance?.[id]) (l.attendance=l.attendance||{})[id]='present'; }); l.status='done'; save(); refresh();
@@ -1117,6 +1168,7 @@ function loadSample(){
   sched(a,2,'16:00',90,3,8); sched(b,6,'10:00',120,3,8); sched(c,4,'19:30',90,2,8); sched(d,3,'15:00',60,2,8); sched(e,0,'14:00',60,1,6);
   if(!S.lessons.some(l=>l.date===t)) S.lessons.push({id:uid(),seriesId:null,studentIds:[a.id],title:'',subject:'Math',level:'P5',location:'Tampines (home)',date:t,start:'17:00',dur:90,status:'scheduled',attendance:{},covered:'',homework:'',next:'',remarks:'',sent:{}});
   const moved = S.lessons.find(l=>l.studentIds[0]===c.id && l.date>t); if(moved){ moved.origDate=moved.date; moved.origStart=moved.start; moved.date=addDays(moved.date,1); moved.start='20:00'; }
+  a.pay={type:'last'}; b.pay={type:'day',day:1,when:'same'}; c.pay={type:'day',day:5,when:'next'}; d.pay={type:'day',day:15,when:'same'}; e.pay={type:'first'};
   const lastB = S.lessons.filter(l=>l.studentIds[0]===b.id && l.date<t).pop(); if(lastB) lastB.sent={};
   S.payments.push({id:uid(),studentId:b.id,month:ym(t),amount:320,date:t,method:'PayNow',note:''});
 }
