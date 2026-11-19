@@ -325,7 +325,7 @@ select.input{background-image:linear-gradient(45deg,transparent 50%,var(--ink-3)
 const KEY = 'tutorbook.v1';
 const DEFAULT = () => ({
   v:1,
-  settings:{ tutorName:'', signOff:'', country:'65', currency:'S$', tone:'report', engine:'compose', llmModel:'Qwen2.5-0.5B-Instruct-q4f16_1-MLC', onboarded:false, autoLevel:true, levelYear:0, hideInstall:false },
+  settings:{ tutorName:'', signOff:'', country:'65', currency:'S$', tone:'report', engine:'compose', llmModel:'Qwen2.5-0.5B-Instruct-q4f16_1-MLC', onboarded:false, autoLevel:true, levelYear:0, trialOn:true, trialMode:'free', trialRate:'', agencyOn:true, commPayer:'agency', hideInstall:false },
   students:[], lessons:[], payments:[]
 });
 let S;
@@ -335,7 +335,7 @@ S.settings = Object.assign(DEFAULT().settings, S.settings||{});
 S.students.forEach(s=>{ if(s.rateType!=='month') s.rateType='hour'; });
 if(!S.settings.aiProvider) S.settings.aiProvider = S.settings.engine==='llm' ? 'webllm' : 'none';
 if(!S.settings.reportMigrated){ S.settings.tone='report'; S.settings.reportMigrated=true; }
-function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){ toast('Could not save — storage is full'); } }
+function save(){ try{ if(typeof syncCommission==='function') syncCommission(); }catch(e){} try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){ toast('Could not save — storage is full'); } }
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(()=>{});
 
 /* ---------- Utils ---------- */
@@ -394,12 +394,41 @@ function upcomingExams(sid, from, within){
   return out.sort((a,b)=>a.date.localeCompare(b.date));
 }
 /* Fees */
-function feeHours(s, m){ const ls = S.lessons.filter(l=>l.studentIds.includes(s.id) && ym(l.date)===m && l.status!=='cancelled' && (l.attendance?.[s.id]!=='absent')); return {n:ls.length, mins:ls.reduce((a,l)=>a+(+l.dur||0),0)}; }
+const lessonBilling = l => { const b=l.billing||'normal'; if(b==='trial' && S.settings.trialOn===false) return 'normal'; if(b==='commission' && S.settings.agencyOn===false) return 'normal'; return b; };
+function feeBreakdown(s, m){
+  const rate=+s.rate||0, out={n:0, mins:0, amount:0, trial:{n:0, mins:0, amount:0}, comm:{n:0, mins:0, value:0, billed:S.settings.commPayer==='me'}};
+  S.lessons.filter(l=>l.studentIds.includes(s.id) && ym(l.date)===m && l.status!=='cancelled' && l.attendance?.[s.id]!=='absent').forEach(l=>{
+    const mins=+l.dur||0, val=mins/60*rate, b=lessonBilling(l);
+    if(b==='trial'){ const mode=S.settings.trialMode||'free'; const amt = mode==='free' ? 0 : mode==='rate' ? mins/60*(+S.settings.trialRate||0) : val; out.trial.n++; out.trial.mins+=mins; out.trial.amount+=amt; out.amount+=amt; }
+    else if(b==='commission'){ out.comm.n++; out.comm.mins+=mins; out.comm.value+=val; if(out.comm.billed) out.amount+=val; }
+    else { out.n++; out.mins+=mins; out.amount+=val; }
+  });
+  const r2 = x => Math.round(x*100)/100; out.amount=r2(out.amount); out.trial.amount=r2(out.trial.amount); out.comm.value=r2(out.comm.value); return out;
+}
+function feeHours(s, m){ const b=feeBreakdown(s,m); return {n:b.n+(b.comm.billed?b.comm.n:0), mins:b.mins+(b.comm.billed?b.comm.mins:0)}; }
+function feeNotes(s, m){ const b=feeBreakdown(s,m), out=[];
+  if(b.trial.n) out.push(`${b.trial.n>1?b.trial.n+' trial lessons':'Trial lesson'}: ${b.trial.amount?money(b.trial.amount):'free'}`);
+  if(b.comm.n) out.push(`${b.comm.n} agency lesson${b.comm.n>1?'s':''}: ${b.comm.billed?`${money(b.comm.value)} to pay the agency`:'paid to the agency, not billed'}`);
+  return out; }
+function syncCommission(){
+  S.students.forEach(s=>{
+    const ls = lessonsFor(s.id);
+    ls.forEach(l=>{ if(l.billingAuto){ if(l.billing==='commission') delete l.billing; delete l.billingAuto; } });
+    if(S.settings.agencyOn===false || s.source!=='agency') return;
+    let left = Math.max(0, Math.floor(+s.commLessons||0));
+    ls.filter(l=>l.status!=='cancelled' && l.studentIds.length===1 && l.attendance?.[s.id]!=='absent').forEach(l=>{
+      if(left<=0) return;
+      if(l.billing==='commission'){ left--; return; }
+      if(l.billing){ return; }
+      l.billing='commission'; l.billingAuto=true; left--; });
+  });
+}
 const hrsLabel = mins => { const h=Math.round(mins/60*100)/100; return `${h} hour${h===1?'':'s'}`; };
 function feeDue(s, m){
   if(!s.rate) return 0;
-  if(s.rateType==='month') return S.lessons.some(l=>l.studentIds.includes(s.id) && ym(l.date)===m && l.status!=='cancelled') ? +s.rate : 0;
-  return Math.round(feeHours(s,m).mins/60*(+s.rate)*100)/100;
+  const b = feeBreakdown(s,m);
+  if(s.rateType==='month'){ if(b.n>0 || (b.comm.n>0 && b.comm.billed)) return +s.rate; if(b.trial.n>0) return S.settings.trialMode==='full' ? +s.rate : b.trial.amount; return 0; }
+  return b.amount;
 }
 const feePaid = (sid,m) => S.payments.filter(p=>p.studentId===sid && p.month===m).reduce((a,p)=>a+(+p.amount||0),0);
 const payPlan = s => Object.assign({type:'day', day:1, when:'same'}, s.pay||{});
@@ -435,7 +464,7 @@ function feeReminder(s, m){
   const f = feeStatus(s,m), owe = f.due-f.paid, mon = MONL[+m.slice(5)-1];
   const fh = s.rateType!=='month' && s.rate ? feeHours(s,m) : null;
   const out = [s.parentName?`Hi ${s.parentName},`:'Hi,',
-    `A gentle reminder that ${firstName(s.name)}'s tuition fees for ${mon}${fh&&fh.n?` (${fh.n} lesson${fh.n>1?'s':''}, ${hrsLabel(fh.mins)} at ${money(s.rate)} per hour)`:''} ${dueWords(f)}. The amount ${f.paid>0?'remaining ':''}is ${money(owe)}${f.paid>0?`, as ${money(f.paid)} has been received`:''}.`,
+    `A gentle reminder that ${firstName(s.name)}'s tuition fees for ${mon}${fh&&fh.n?` (${fh.n} lesson${fh.n>1?'s':''}, ${hrsLabel(fh.mins)} at ${money(s.rate)} per hour${feeBreakdown(s,m).trial.amount?`, plus a trial lesson at ${money(feeBreakdown(s,m).trial.amount)}`:''})`:''} ${dueWords(f)}. The amount ${f.paid>0?'remaining ':''}is ${money(owe)}${f.paid>0?`, as ${money(f.paid)} has been received`:''}.`,
     'Thank you!'];
   const sign = S.settings.signOff || S.settings.tutorName; if(sign) out.push(sign);
   return out.join('\n\n');
@@ -509,6 +538,7 @@ function statusPills(l){
   else if(l.status==='cancelled') p.push('<span class="pill coral">Cancelled</span>');
   else if(isPast(l)) p.push('<span class="pill amber">Add notes</span>');
   if(l.origDate && l.status!=='cancelled') p.push(`<span class="pill brand">Moved from ${fmtDate(l.origDate)}</span>`);
+  const bt=lessonBilling(l); if(bt==='trial') p.push('<span class="pill brand">Trial</span>'); if(bt==='commission') p.push('<span class="pill amber">Agency</span>');
   return p;
 }
 function lessonCard(l, opts={}){
@@ -629,11 +659,11 @@ SCREENS.payments = () => {
   const due = fs.reduce((a,x)=>a+x.f.due,0), got = fs.reduce((a,x)=>a+x.f.paid,0), od = fs.filter(x=>x.f.key==='overdue').length;
   let h = `<div class="topbar"><h1>Fees</h1></div>
   <section class="hero" style="padding-bottom:20px"><div style="display:flex;justify-content:space-between;align-items:center"><button class="mini-btn" style="background:rgba(255,255,255,.18);color:#fff;box-shadow:none" data-act="payNav" data-id="-1" aria-label="Previous month">${I.left}</button><div class="date" style="font-size:16px">${fmtMonth(m)}</div><button class="mini-btn" style="background:rgba(255,255,255,.18);color:#fff;box-shadow:none" data-act="payNav" data-id="1" aria-label="Next month">${I.right}</button></div>
-    <div class="big" style="text-align:center;margin-top:14px;font-size:36px">${money(got)}</div><div class="line" style="text-align:center">collected of ${money(due)} expected${od?`, ${od} overdue`:''}</div>
+    <div class="big" style="text-align:center;margin-top:14px;font-size:36px">${money(got)}</div><div class="line" style="text-align:center">collected of ${money(due)} expected${od?`, ${od} overdue`:''}</div>${(()=>{ const owe=S.settings.agencyOn!==false&&S.settings.commPayer==='me' ? list.reduce((a,s)=>a+feeBreakdown(s,m).comm.value,0) : 0; return owe?`<div class="line" style="text-align:center;color:var(--amber)">${money(owe)} of this goes to agencies</div>`:''; })()}
     <div class="bar" style="margin-top:16px"><i class="on" style="flex:${Math.max(0.001,Math.min(got,due))}"></i><i style="flex:${Math.max(0.001,due-got)}"></i></div></section>`;
   if(!list.length) return h + `<div class="soft-empty" style="margin-top:16px">Add students with a fee to track payments here.</div>`;
   h += `<div class="sec"><h2>Students</h2><span class="sub small">Tap to record a payment</span></div>`;
-  h += fs.map(({s,f})=>`<button class="scard" data-act="payStudent" data-id="${s.id}">${avatar(s)}<div class="grow"><div class="t">${esc(s.name)}</div><div class="sub small">${f.due?`${money(f.paid)} of ${money(f.due)}`:(s.rate?'No lessons this month':'No fee set')}${s.rate?(s.rateType==='month'?', monthly':`, ${hrsLabel(feeHours(s,m).mins)} at ${money(s.rate)}/hr`):''}</div>${s.rate?`<div class="muted small">Pays ${esc(planLabel(s))}${f.dueDate&&f.key!=='paid'?` (${esc(fmtDate(f.dueDate))})`:''}</div>`:''}</div>${feePill(f)}</button>`).join('');
+  h += fs.map(({s,f})=>`<button class="scard" data-act="payStudent" data-id="${s.id}">${avatar(s)}<div class="grow"><div class="t">${esc(s.name)}</div><div class="sub small">${f.due?`${money(f.paid)} of ${money(f.due)}`:(s.rate?'No lessons this month':'No fee set')}${s.rate?(s.rateType==='month'?', monthly':`, ${hrsLabel(feeHours(s,m).mins)} at ${money(s.rate)}/hr`):''}</div>${feeNotes(s,m).map(x=>`<div class="muted small">${esc(x)}</div>`).join('')}${s.rate?`<div class="muted small">Pays ${esc(planLabel(s))}${f.dueDate&&f.key!=='paid'?` (${esc(fmtDate(f.dueDate))})`:''}</div>`:''}</div>${feePill(f)}</button>`).join('');
   return h + `<p class="muted small" style="margin:10px 6px">Hourly fees use the hours of this month’s lessons, leaving out cancelled lessons and absences.</p>`;
 };
 
@@ -663,6 +693,14 @@ SCREENS.settings = () => {
       <div id="llmStatus" class="hint" style="margin:8px 4px 0">${esc(llm.status||'')}</div><div class="progress"><i id="llmBar" style="width:${(llm.progress||0)*100}%"></i></div><div style="height:12px"></div>`:''}
     ${aiProvider()==='none'?`<p class="hint">Turn on AI writing for smooth, natural sentences. Without it, Tutorbook tidies your notes with fixed rules.</p>`:''}
   </div>
+  <div class="form-card"><div class="fc-title">${I.money} Trial and agency lessons</div>
+    <button class="set-row" style="width:100%;padding:4px 4px 12px" data-act="toggleSet" data-id="trialOn"><div style="flex:1;text-align:left"><b>Trial lessons</b><div class="muted small">Mark a lesson as a trial</div></div><span class="pill ${st.trialOn!==false?'mint':''}">${st.trialOn!==false?'On':'Off'}</span></button>
+    ${st.trialOn!==false?`<label class="field"><span>Trial lessons are</span><select class="input" data-set="trialMode"><option value="free" ${st.trialMode==='free'?'selected':''}>Free</option><option value="rate" ${st.trialMode==='rate'?'selected':''}>Charged at a trial rate</option><option value="full" ${st.trialMode==='full'?'selected':''}>Charged at the student’s normal rate</option></select></label>
+      ${st.trialMode==='rate'?`<label class="field"><span>Trial rate per hour (${esc(st.currency)})</span><input class="input" type="number" inputmode="decimal" step="any" data-set="trialRate" value="${esc(st.trialRate)}"></label>`:''}`:''}
+    <button class="set-row" style="width:100%;padding:4px 4px 12px" data-act="toggleSet" data-id="agencyOn"><div style="flex:1;text-align:left"><b>Agency commission lessons</b><div class="muted small">For students found through a tuition agency</div></div><span class="pill ${st.agencyOn!==false?'mint':''}">${st.agencyOn!==false?'On':'Off'}</span></button>
+    ${st.agencyOn!==false?`<label class="field"><span>For commission lessons</span><select class="input" data-set="commPayer"><option value="agency" ${st.commPayer!=='me'?'selected':''}>Parent pays the agency (I don’t bill)</option><option value="me" ${st.commPayer==='me'?'selected':''}>Parent pays me (I pay the agency)</option></select></label>
+      <p class="hint">In a student’s profile, choose “Through an agency” and how many of their first lessons are commission. Those lessons are marked automatically.</p>`:''}
+  </div>
   <div class="form-card"><div class="fc-title">${I.spark} New school year</div>
     <p class="hint" style="margin:-6px 4px 12px">Every January, Tutorbook suggests each student’s next level (P5 to P6, P6 to S1 and so on) for you to check before anything changes.</p>
     <button class="set-row" style="width:100%;padding:4px 4px 12px" data-act="toggleAutoLevel"><div style="flex:1;text-align:left"><b>Suggest new levels in January</b></div><span class="pill ${st.autoLevel!==false?'mint':''}">${st.autoLevel!==false?'On':'Off'}</span></button>
@@ -673,7 +711,7 @@ SCREENS.settings = () => {
     <button class="set-row" style="width:100%" data-act="exportIcs"><span class="ic mint">${I.cal}</span><div style="flex:1;text-align:left"><b>Export to Apple Calendar</b></div>${I.chev}</button>
     <button class="set-row" style="width:100%" data-act="loadSample"><span class="ic amber">${I.spark}</span><div style="flex:1;text-align:left"><b>Add sample data</b></div>${I.chev}</button>
     <button class="set-row" style="width:100%" data-act="wipe"><span class="ic coral">${I.trash}</span><div style="flex:1;text-align:left;color:var(--coral)"><b>Erase everything</b></div></button></div>
-  <p class="muted small" style="text-align:center;margin-top:18px">Tutorbook 1.5, ${S.students.length} students, ${S.lessons.length} lessons</p>`;
+  <p class="muted small" style="text-align:center;margin-top:18px">Tutorbook 1.6, ${S.students.length} students, ${S.lessons.length} lessons</p>`;
 };
 
 /* ---------- Sheets ---------- */
@@ -732,7 +770,7 @@ function lessonSheet(id){
     const allMarked = stus.length && stus.every(s=>att[s.id]); const hasNotes = !!(l.covered||'').trim();
     let h = `<div class="s-hero" style="--c:${m.c}">${glyph(l.subject)}<h2>${esc(lessonTitle(l))}</h2>
       <div class="kv"><span>${I.cal}${esc(fmtDate(l.date,true))}</span><span>${I.clock}${fmtTime(l.start)} – ${fmtTime(endTime(l))} (${durLabel(l.dur)})</span>${l.location?`<span>${I.pin}${esc(l.location)}</span>`:''}</div>
-      <div class="pills" style="margin-top:12px"><span class="pill">${esc([l.level,l.subject].filter(Boolean).join(' ')||'Lesson')}</span>${l.status==='done'?'<span class="pill">✓ Completed</span>':l.status==='cancelled'?'<span class="pill">Cancelled</span>':''}${l.origDate?`<span class="pill">Moved from ${esc(fmtDate(l.origDate))}, ${fmtTime(l.origStart)}</span>`:''}</div></div>
+      <div class="pills" style="margin-top:12px"><span class="pill">${esc([l.level,l.subject].filter(Boolean).join(' ')||'Lesson')}</span>${l.status==='done'?'<span class="pill">✓ Completed</span>':l.status==='cancelled'?'<span class="pill">Cancelled</span>':''}${l.origDate?`<span class="pill">Moved from ${esc(fmtDate(l.origDate))}, ${fmtTime(l.origStart)}</span>`:''}${lessonBilling(l)==='trial'?`<span class="pill">Trial lesson${S.settings.trialMode==='free'?', free':''}</span>`:''}${lessonBilling(l)==='commission'?`<span class="pill">Agency lesson${S.settings.commPayer==='me'?'':', not billed'}</span>`:''}</div></div>
       <div class="tiles"><button class="tile" data-act="reschedule" data-id="${l.id}">${I.move}Reschedule</button><button class="tile" data-act="editLesson" data-id="${l.id}">${I.edit}Edit</button>
       ${l.status==='cancelled'?`<button class="tile" data-act="setStatus" data-id="${l.id}" data-v="scheduled">${I.undo}Restore</button>`:`<button class="tile danger" data-act="setStatus" data-id="${l.id}" data-v="cancelled">${I.ban}Cancel</button>`}
       ${stus.length===1?`<button class="tile" data-act="openStudent" data-id="${stus[0].id}">${I.user}Student</button>`:''}</div>`;
@@ -782,6 +820,7 @@ function lessonForm(id, preset={}){
       <span class="label" style="margin-top:2px">How long</span>
       <div class="chips" style="margin-bottom:12px">${DURS.map(d=>`<label class="chip"><input type="radio" name="dur" value="${d}" ${+v.dur===d?'checked':''}>${durLabel(d)}</label>`).join('')}<label class="chip"><input type="radio" name="dur" value="custom" ${custom?'checked':''}>Other</label></div>
       <label class="field" id="durC" ${custom?'':'hidden'}><span>Minutes</span><input class="input" type="number" name="durCustom" min="15" step="5" value="${custom?v.dur:''}"></label>
+      ${S.settings.trialOn!==false||S.settings.agencyOn!==false?`<span class="label" style="margin-top:2px">Lesson type</span><div class="chips" style="margin-bottom:14px">${[['normal','Normal',true],['trial','Trial',S.settings.trialOn!==false],['commission','Agency commission',S.settings.agencyOn!==false]].filter(x=>x[2]).map(([k,lab])=>`<label class="chip"><input type="radio" name="billing" value="${k}" ${(l?lessonBilling(l):'normal')===k?'checked':''}>${lab}</label>`).join('')}</div>`:''}
       ${l ? (l.seriesId?`<label class="chip" style="margin-bottom:14px"><input type="checkbox" name="series">Also update later lessons in this weekly series</label>`:'')
           : `<span class="label" style="margin-top:2px">Repeats weekly?</span><div class="chips" style="margin-bottom:14px">${[[0,'Just once'],[4,'4 weeks'],[13,'3 months'],[26,'6 months'],[52,'1 year']].map(([n,lab],i)=>`<label class="chip"><input type="radio" name="repeat" value="${n}" ${i===0?'checked':''}>${lab}</label>`).join('')}</div>`}</div>
     <datalist id="lvlList">${['N1','N2','K1','K2','P1','P2','P3','P4','P5','P6','S1','S2','S3','S4','S5','JC1','JC2','Adult'].map(s=>`<option value="${s}">`).join('')}</datalist>
@@ -800,10 +839,11 @@ function lessonForm(id, preset={}){
       const shared = {studentIds:data.studentIds,title:data.title,subject:data.subject,level:data.level,location:data.location,dur:data.dur};
       if(fd.get('series')) S.lessons.filter(x=>x.seriesId===l.seriesId && x.date>l.date && x.status==='scheduled').forEach(x=>{ Object.assign(x,shared); if(!x.origDate) x.start=data.start; });
       if((data.date!==l.date || data.start!==l.start) && !l.origDate){ l.origDate=l.date; l.origStart=l.start; }
+      const nb = fd.get('billing'); if(nb && nb!==lessonBilling(l)){ if(nb==='normal'){ l.billing='normal'; } else l.billing=nb; delete l.billingAuto; }
       Object.assign(l, data); toast('Lesson updated');
     } else {
       const n = +fd.get('repeat')||0; const sid = n? uid() : null;
-      for(let i=0;i<=(n?n-1:0);i++) S.lessons.push({ id:uid(), seriesId:sid, ...data, date:addDays(data.date,7*i), status:'scheduled', attendance:{}, covered:'', homework:'', next:'', remarks:'', sent:{} });
+      for(let i=0;i<=(n?n-1:0);i++) S.lessons.push({ id:uid(), seriesId:sid, ...data, date:addDays(data.date,7*i), status:'scheduled', attendance:{}, covered:'', homework:'', next:'', remarks:'', sent:{}, ...(fd.get('billing')&&fd.get('billing')!=='normal'&&i===0?{billing:fd.get('billing')}:{}) });
       view.calDay = view.homeDay = data.date; view.calMonth = ym(data.date);
       toast(n?`${n} weekly lessons scheduled`:'Lesson scheduled');
     }
@@ -846,6 +886,11 @@ function studentForm(id){
     <div class="form-card"><div class="fc-title">${I.wa} Parent</div>
       <label class="field"><span>How you address them</span><input class="input" name="parentName" value="${esc(v.parentName)}" placeholder="e.g. Mdm Siti"></label>
       <label class="field"><span>WhatsApp number</span><input class="input" type="tel" name="parentPhone" value="${esc(v.parentPhone)}" placeholder="9123 4567"></label></div>
+    ${S.settings.agencyOn!==false?`<div class="form-card"><div class="fc-title">${I.users} How they found you</div>
+      <div class="chips" style="margin-bottom:12px"><label class="chip"><input type="radio" name="source" value="direct" ${v.source!=='agency'?'checked':''}>Directly</label><label class="chip"><input type="radio" name="source" value="agency" ${v.source==='agency'?'checked':''}>Through an agency</label></div>
+      <div id="agencyBox" ${v.source!=='agency'?'hidden':''}><div class="grid2"><label class="field"><span>Agency name</span><input class="input" name="agency" value="${esc(v.agency||'')}" placeholder="Optional"></label>
+        <label class="field"><span>Commission lessons</span><input class="input" type="number" inputmode="numeric" min="0" max="20" name="commLessons" value="${esc(v.commLessons??'')}" placeholder="e.g. 4"></label></div>
+        <p class="hint">Their first lessons up to this number are marked as agency lessons (cancelled and absent lessons don’t count). You can still change any lesson by hand.</p></div></div>`:''}
     <div class="form-card"><div class="fc-title">${I.money} Fees</div>
       <div class="grid2"><label class="field"><span>Rate (${esc(S.settings.currency)})</span><input class="input" type="number" inputmode="decimal" step="any" name="rate" value="${esc(v.rate)}"></label>
       <div class="field"><span>Charged</span><div class="chips"><label class="chip"><input type="radio" name="rateType" value="hour" ${v.rateType!=='month'?'checked':''}>Per hour</label><label class="chip"><input type="radio" name="rateType" value="month" ${v.rateType==='month'?'checked':''}>Monthly</label></div></div></div>
@@ -863,12 +908,13 @@ function studentForm(id){
   const sf = $('#stForm', topWrap());
   const hint = () => { const fd=new FormData(sf); const r=+fd.get('rate');
     $('#rateHint',sf).textContent = !r ? '' : fd.get('rateType')==='month' ? `A fixed ${money(r)} each month that has lessons.` : `A 1-hour lesson is ${money(r)}, 1h 30m is ${money(r*1.5)} and 2h is ${money(r*2)}.`; const type=fd.get('payType')||'day'; const m=ym(today()); const day=Math.min(31,Math.max(1,+fd.get('payDay')||1)); const when=fd.get('payWhen');
-    $('#payDayBox',sf).hidden = type!=='day';
+    $('#payDayBox',sf).hidden = type!=='day'; const ab=$('#agencyBox',sf); if(ab) ab.hidden = fd.get('source')!=='agency';
     $('#payHint',sf).textContent = type==='first' ? `Example: ${MONL[+m.slice(5)-1]} fees are due at the first ${MONL[+m.slice(5)-1]} lesson.` : type==='last' ? `Example: ${MONL[+m.slice(5)-1]} fees are due at the last ${MONL[+m.slice(5)-1]} lesson.`
       : `Example: ${MONL[+m.slice(5)-1]} fees are due on ${day} ${MONL[+(when==='next'?addMonths(m,1):m).slice(5)-1]}.${day>28?' In shorter months, the last day of the month is used.':''}`; };
   sf.addEventListener('input', hint); sf.addEventListener('change', hint); hint();
   sf.addEventListener('submit', e=>{ e.preventDefault(); const fd=new FormData(e.target);
     const d = { pay: { type: fd.get('payType')||'day', day: Math.min(31,Math.max(1,+fd.get('payDay')||1)), when: fd.get('payWhen')||'same' } }; ['name','level','subject','school','location','parentName','parentPhone','rateType'].forEach(k=>d[k]=(fd.get(k)||'').trim()); d.rate = fd.get('rate')===''?'':+fd.get('rate');
+    if(fd.has('source')){ d.source=fd.get('source'); d.agency=(fd.get('agency')||'').trim(); d.commLessons=fd.get('commLessons')===''?0:Math.max(0,Math.floor(+fd.get('commLessons')||0)); }
     if(s){ d.active = !!fd.get('active'); Object.assign(s,d); toast('Student saved'); }
     else { S.students.push({id:uid(), ...d, active:true, learning:'', notes:'', exams:[]}); toast(`${d.name} added`); }
     save(); closeSheet(); if(stack.length && stack[stack.length-1].title==='Add') closeSheet(); refresh();
@@ -883,7 +929,7 @@ function studentSheet(id){
     const past = all.filter(l=>l.date<=t && l.status==='done').reverse().slice(0,6);
     const months = [0,-1,-2].map(n=>addMonths(ym(t),n));
     let h = `<div class="s-hero" style="--c:${c}"><div style="display:flex;gap:14px;align-items:center">${avatar(s,'lg')}<div style="min-width:0"><h2 style="margin:0">${esc(s.name)}</h2><div style="opacity:.9">${esc([s.level,s.subject].filter(Boolean).join(' '))}${s.school?', '+esc(s.school):''}</div></div></div>
-      <div class="kv" style="margin-top:14px">${s.parentName||s.parentPhone?`<span>${I.phone}${esc([s.parentName,s.parentPhone].filter(Boolean).join(', '))}</span>`:''}${s.location?`<span>${I.pin}${esc(s.location)}</span>`:''}${s.rate?`<span>${I.money}${money(s.rate)} per ${s.rateType==='month'?'month':'hour'}, paid ${esc(planLabel(s))}</span>`:''}</div></div>
+      <div class="kv" style="margin-top:14px">${s.source==='agency'&&S.settings.agencyOn!==false?`<span>${I.users}Through ${esc(s.agency||'an agency')}${s.commLessons?`, first ${s.commLessons} lesson${s.commLessons>1?'s':''} are commission`:''}</span>`:''}${s.parentName||s.parentPhone?`<span>${I.phone}${esc([s.parentName,s.parentPhone].filter(Boolean).join(', '))}</span>`:''}${s.location?`<span>${I.pin}${esc(s.location)}</span>`:''}${s.rate?`<span>${I.money}${money(s.rate)} per ${s.rateType==='month'?'month':'hour'}, paid ${esc(planLabel(s))}</span>`:''}</div></div>
       <div class="tiles"><button class="tile wa" data-act="waBlank" data-id="${s.id}">${I.wa}WhatsApp</button><button class="tile" data-act="newLesson" data-sid="${s.id}">${I.cal}Schedule</button><button class="tile" data-act="payStudent" data-id="${s.id}">${I.money}Fees</button><button class="tile" data-act="editStudent" data-id="${s.id}">${I.edit}Edit</button></div>
       <span class="label">Currently learning</span>
       <textarea class="input" rows="2" data-sbind="${s.id}.learning" placeholder="e.g. Multiplication tables; building the model drawing habit">${esc(s.learning)}</textarea>
@@ -908,7 +954,7 @@ function paySheet(sid, m){
   openSheet(()=>{
     const s = stu(sid); const f = feeStatus(s,m);
     const ps = S.payments.filter(p=>p.studentId===sid && p.month===m);
-    return `<div class="card pad" style="margin-bottom:12px;display:flex;align-items:center;gap:12px">${avatar(s)}<div style="flex:1"><div style="font-weight:700">${esc(s.name)}, ${fmtMonth(m)}</div><div class="sub small">${money(f.paid)} paid of ${money(f.due)}</div>${s.rateType!=='month'&&s.rate?(()=>{const fh=feeHours(s,m); return `<div class="muted small">${fh.n} lesson${fh.n===1?'':'s'}, ${hrsLabel(fh.mins)} at ${money(s.rate)}/hr</div>`;})():''}<div class="muted small">${f.dueDate?`Due ${esc(fmtDate(f.dueDate,true))}`:'Due '+esc(planLabel(s))+' (no lessons yet)'}</div></div>${feePill(f)}</div>
+    return `<div class="card pad" style="margin-bottom:12px;display:flex;align-items:center;gap:12px">${avatar(s)}<div style="flex:1"><div style="font-weight:700">${esc(s.name)}, ${fmtMonth(m)}</div><div class="sub small">${money(f.paid)} paid of ${money(f.due)}</div>${s.rateType!=='month'&&s.rate?(()=>{const fh=feeHours(s,m); return `${feeNotes(s,m).map(x=>`<div class="muted small">${esc(x)}</div>`).join('')}<div class="muted small">${fh.n} lesson${fh.n===1?'':'s'}, ${hrsLabel(fh.mins)} at ${money(s.rate)}/hr</div>`;})():''}<div class="muted small">${f.dueDate?`Due ${esc(fmtDate(f.dueDate,true))}`:'Due '+esc(planLabel(s))+' (no lessons yet)'}</div></div>${feePill(f)}</div>
       ${owing(f)?`<button class="btn wa block" style="margin-bottom:12px" data-act="waFee" data-id="${sid}" data-m="${m}">${I.wa} Send fee reminder on WhatsApp</button>${(s.reminded||{})[m]?`<p class="hint" style="margin:-4px 4px 12px;text-align:center">Last reminder sent ${esc(fmtDate(s.reminded[m]))}</p>`:''}`:''}
       ${ps.length?`<div class="card" style="margin-bottom:12px">${ps.map(p=>`<div class="row"><span class="ic mint">${I.check}</span><div class="grow"><div class="t">${money(p.amount)} by ${esc(p.method)}</div><div class="d">${esc(fmtDate(p.date))}${p.note?', '+esc(p.note):''}</div></div><button class="mini-btn" style="box-shadow:none" data-act="delPay" data-id="${p.id}" aria-label="Delete payment">${I.x}</button></div>`).join('')}</div>`:''}
       <form id="payForm" data-sid="${sid}"><div class="form-card"><div class="fc-title">${I.money} Record a payment</div>
@@ -1272,6 +1318,7 @@ const ACT = {
   skipLevels: d => { S.settings.levelYear=+d.id; save(); closeSheet(); toast('Levels left as they are'); },
   reviewLevels: () => levelSheet(new Date().getFullYear()),
   toggleAutoLevel: () => { S.settings.autoLevel = S.settings.autoLevel===false; save(); render(); },
+  toggleSet: d => { S.settings[d.id] = S.settings[d.id]===false; save(); render(); },
   toggleAiAuto: () => { S.settings.aiAuto = S.settings.aiAuto===false; save(); render(); },
   testAI: async () => { toast('Testing…'); try{ const r = await aiComplete('Reply with exactly: OK', 'Test', {max:20}); toast(/ok/i.test(r)?`${aiName()} is connected`:`${aiName()} replied: ${r.slice(0,40)}`); }catch(e){ toast(e.message||String(e)); } },
   waFee: d => { const s=stu(d.id); openWA(s.parentPhone, feeReminder(s, d.m)); (s.reminded=s.reminded||{})[d.m]=today(); save(); setTimeout(refresh,400); },
@@ -1367,6 +1414,7 @@ function loadSample(){
   sched(a,2,'16:00',90,3,8); sched(b,6,'10:00',120,3,8); sched(c,4,'19:30',90,2,8); sched(d,3,'15:00',60,2,8); sched(e,0,'14:00',60,1,6);
   if(!S.lessons.some(l=>l.date===t)) S.lessons.push({id:uid(),seriesId:null,studentIds:[a.id],title:'',subject:'Math',level:'P5',location:'Tampines (home)',date:t,start:'17:00',dur:90,status:'scheduled',attendance:{},covered:'',homework:'',next:'',remarks:'',sent:{}});
   const moved = S.lessons.find(l=>l.studentIds[0]===c.id && l.date>t); if(moved){ moved.origDate=moved.date; moved.origStart=moved.start; moved.date=addDays(moved.date,1); moved.start='20:00'; }
+  e.source='agency'; e.agency='BrightPath Tuition Agency'; e.commLessons=2; { const zl=S.lessons.filter(l=>l.studentIds[0]===d.id).sort(sortL)[0]; if(zl) zl.billing='trial'; }
   a.pay={type:'last'}; b.pay={type:'day',day:1,when:'same'}; c.pay={type:'day',day:5,when:'next'}; d.pay={type:'day',day:15,when:'same'}; e.pay={type:'first'};
   const lastB = S.lessons.filter(l=>l.studentIds[0]===b.id && l.date<t).pop(); if(lastB) lastB.sent={};
   S.payments.push({id:uid(),studentId:b.id,month:ym(t),amount:320,date:t,method:'PayNow',note:''});
