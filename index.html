@@ -664,7 +664,7 @@ SCREENS.settings = () => {
     <button class="set-row" style="width:100%" data-act="exportIcs"><span class="ic mint">${I.cal}</span><div style="flex:1;text-align:left"><b>Export to Apple Calendar</b></div>${I.chev}</button>
     <button class="set-row" style="width:100%" data-act="loadSample"><span class="ic amber">${I.spark}</span><div style="flex:1;text-align:left"><b>Add sample data</b></div>${I.chev}</button>
     <button class="set-row" style="width:100%" data-act="wipe"><span class="ic coral">${I.trash}</span><div style="flex:1;text-align:left;color:var(--coral)"><b>Erase everything</b></div></button></div>
-  <p class="muted small" style="text-align:center;margin-top:18px">Tutorbook 1.3, ${S.students.length} students, ${S.lessons.length} lessons</p>`;
+  <p class="muted small" style="text-align:center;margin-top:18px">Tutorbook 1.4, ${S.students.length} students, ${S.lessons.length} lessons</p>`;
 };
 
 /* ---------- Sheets ---------- */
@@ -730,7 +730,7 @@ function lessonSheet(id){
     let foot = '';
     if(l.status!=='cancelled'){
       h += `<div class="step"><span class="num ${allMarked?'done':''}">${allMarked?'✓':'1'}</span><h3>Attendance</h3></div><div class="card">${stus.map(s=>{const a=att[s.id]; return `<div class="att">${avatar(s)}<div class="nm">${esc(s.name)}</div><div class="att-opts">${[['present','Present','p',I.check],['late','Late','l',I.late],['absent','Absent','a',I.absent]].map(([v,lab,k,ic])=>`<button class="att-b ${k} ${a===v?'on':''}" data-act="att" data-id="${l.id}" data-sid="${s.id}" data-v="${v}" aria-pressed="${a===v}">${ic}${lab}</button>`).join('')}</div></div>`;}).join('') || '<div class="soft-empty">No students on this lesson.</div>'}</div>`;
-      h += `<div class="step"><span class="num ${hasNotes?'done':''}">${hasNotes?'✓':'2'}</span><h3>Lesson notes</h3><span class="hint" style="margin:0">One point per line</span></div>
+      h += `<div class="step"><span class="num ${hasNotes?'done':''}">${hasNotes?'✓':'2'}</span><h3>Lesson notes</h3><span class="hint" style="margin:0">Quick notes are fine</span></div><p class="hint" style="margin:-2px 4px 10px">Write one point per line. Short forms like hw, qns and pg 34-36 are fine: the parent update turns them into full, professional sentences.</p>
         <div class="form-card">
         <label class="field"><span>Lesson summary</span><textarea class="input" rows="4" data-bind="${l.id}.covered" placeholder="Multiplication tables: completed the 3x and 4x tests with full marks&#10;Homework review: went through her corrections&#10;Model drawing: practised drawing models in class">${esc(l.covered)}</textarea></label>
         <label class="field"><span>Areas for improvement</span><textarea class="input" rows="2" data-bind="${l.id}.improve" placeholder="e.g. Draw a model for every problem sum">${esc(l.improve)}</textarea></label>
@@ -921,8 +921,83 @@ function partOfDay(){ const h=new Date().getHours(); return h<12?'morning':h<18?
 const lines = t => String(t||'').split(/\n/).map(x=>x.replace(/^\s*(?:[-–*•]|\d+[.)])\s+/,'').trim()).filter(Boolean);
 const sentence = x => { x=String(x).trim(); if(!x) return ''; x=x[0].toUpperCase()+x.slice(1); return /[.!?)]$/.test(x)?x:x+'.'; };
 const dayMonth = d => { const x=pd(d); return `${x.getDate()} ${MONL[x.getMonth()]}`; };
-function composeReport(l, sid, o){
-  const s=stu(sid), kid=firstName(s.name), subj=l.subject||s.subject||'';
+/* ---------- Note polisher (offline) ---------- */
+const ABBR = [
+  [/\bhw\b/gi,'homework'],[/\bqns?\b/gi,m=>/s$/i.test(m)?'questions':'question'],[/\bques\b/gi,'questions'],[/\bqs\b/gi,'questions'],
+  [/\bans\b/gi,'answers'],[/\bcorr\b/gi,'corrections'],[/\bw\/o\b/gi,'without'],[/\bw\/\s*/gi,'with '],[/\bw\b(?=\s+(?:some|a|the|little|help|guidance|no)\b)/gi,'with'],
+  [/\bb4\b/gi,'before'],[/\btmr\b/gi,'tomorrow'],[/\bnxt\b/gi,'next'],[/\bwk\b/gi,'week'],[/\bwks\b/gi,'weeks'],[/\bsch\b/gi,'school'],
+  [/\babt\b/gi,'about'],[/\bthru\b/gi,'through'],[/\b(?:bcos|bcoz|cos|coz|bc)\b/gi,'because'],[/\s&\s/g,' and '],[/\s\+\s(?=[a-z])/gi,' and '],[/\sn\s/g,' and '],
+  [/\bintro\b/gi,'introduce'],[/\bprac\b/gi,'practice'],[/\brev\b/gi,'revision'],[/\b(?:wksht|ws)\b/gi,'worksheet'],[/\bass(?:essment)?\.?\s*bk\b/gi,'assessment book'],[/\bbk\b/gi,'book'],[/\btb\b/gi,'textbook'],[/\bwb\b/gi,'workbook'],
+  [/\bppr\b/gi,'paper'],[/\bexam ppr\b/gi,'exam paper'],[/\beg\b/gi,'e.g.'],[/\bmaybe\b/gi,'possibly'],[/\babit\b/gi,'a little'],[/\ba bit\b/gi,'a little'],[/\balot\b/gi,'a lot'],[/\bgd\b/gi,'good'],
+  [/\bdont\b/gi,'do not'],[/\bdon't\b/gi,'do not'],[/\bdidnt\b/gi,"did not"],[/\bdidn't\b/gi,'did not'],[/\bcant\b/gi,'cannot'],[/\bcan't\b/gi,'cannot'],[/\bwasnt\b/gi,'was not'],[/\bwasn't\b/gi,'was not'],[/\bisnt\b/gi,'is not'],[/\bisn't\b/gi,'is not'],[/\bwont\b/gi,'will not'],[/\bwon't\b/gi,'will not'],
+  [/\b(psle|mcq|mcqs|sa1|sa2|wa1|wa2|wa3|ca1|ca2|eoy|ib|ip|jc|olevel)\b/gi,m=>m.toUpperCase()],[/\bi\b/g,'I'],
+];
+function tidy(t){
+  let x=String(t||'').replace(/\s+/g,' ').trim();
+  x=x.replace(/\bpg?s?\.?\s*(\d+)\s*[-–to]+\s*(\d+)/gi,'pages $1–$2').replace(/\bpg?\.?\s*(\d+)\b/gi,'page $1').replace(/\bpp\.?\s*(\d+)\s*[-–]\s*(\d+)/gi,'pages $1–$2');
+  x=x.replace(/\bq\s*(\d+)\s*[-–]\s*q?\s*(\d+)/gi,'questions $1–$2').replace(/\bq(\d+)\b/gi,'question $1');
+  ABBR.forEach(([re,rp])=>{ x=x.replace(re,rp); });
+  x=x.replace(/\b\d+x(?:(?:\s*,\s*|\s+and\s+|\s+)\d+x)+\b/gi, g=>listify(g.split(/\s*,\s*|\s+and\s+|\s+/).filter(Boolean).map(z=>z.toLowerCase())));
+  x=x.replace(/\b((?:the\s+)?[a-z0-9 ]{0,20}?(?:assessment book|workbook|textbook|worksheet|paper))\s+(pages? \d+(?:–\d+)?)/i,(m0,bk,pg)=>`${pg} of the ${bk.replace(/^the\s+/i,'')}`);
+  x=x.replace(/\b(in|from|on|of)\s+(?!the\b|her\b|his\b|my\b|a\b|an\b|their\b|our\b|class\b)((?:[A-Z]{2}\d\s+)?(?:assessment book|workbook|textbook|worksheet|paper|exam paper)\b)/gi,'$1 the $2');
+  x=x.replace(/\s+so\s+(?!we\b|she\b|he\b|I\b|that\b)(\w+ed)\b/gi,', so we $1');
+  x=x.replace(/\s+([,.;:!?])/g,'$1').replace(/([,;:])(?=\S)/g,'$1 ').replace(/\.{2,}/g,'.').replace(/[.]+$/,'');
+  return x.trim();
+}
+const lowerFirst = x => /^[A-Z][a-z]/.test(x) && !/^(I|PSLE|MCQ|SA\d|WA\d)\b/.test(x) ? x[0].toLowerCase()+x.slice(1) : x;
+const capFirst = x => x ? x[0].toUpperCase()+x.slice(1) : x;
+const TUTOR_PAST = /^(went through|covered|reviewed|revised|discussed|introduced|taught|explained|worked on|looked at|recapped|marked|checked|started|began|continued|moved on|focused|focussed|touched on|went over|gave)\b/i;
+const KID_PAST = /^(completed|scored|got|attempted|managed|answered|solved|understood|struggled|made|showed|was|were|learnt|learned|mastered|forgot|needed|could|can|did|had|is|seems|seemed|tried|remembered|improved|grasped|drew|wrote|read|memorised|memorized|practised|practiced|finished|knows|knew|enjoyed|found|took|needs|has|kept|missed)\b/i;
+const BASE_VERB = /^(continue|test|introduce|start|begin|revise|go|do|work|practise|practice|review|cover|move|teach|recap|finish|complete|attempt|try|focus|draw|check|show|read|write|memorise|memorize|use|avoid|remember|slow|be|learn|correct|redo|prepare|study|look|explain|keep|spend|bring|label|underline|highlight|plan|build|strengthen|improve|consolidate|reinforce|recite|time|submit)\b/i;
+const HAS_SUBJECT = /^(we|i|she|he|they|our|my|her|his|the student|student)\b/i;
+function polishLine(raw, section, kid){
+  let x = tidy(raw); if(!x) return '';
+  let label = '';
+  const m = x.match(/^([^:]{2,40}):\s*(.+)$/) || x.match(/^([^–\-]{2,30}?)\s+[-–]\s+(.+)$/); if(m && section==='summary'){ label = capFirst(m[1].trim()); x = m[2].trim(); }
+  const startsKid = new RegExp('^'+kid.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b','i').test(x);
+  const body = lowerFirst(x);
+  let out;
+  if(startsKid || HAS_SUBJECT.test(x) || /^(once|after|when|before|by|in|next|from|if|as|since|this|these|there|it)\b/i.test(x)) out = x;
+  else if(section==='summary'){
+    if(TUTOR_PAST.test(x)) out = `We ${body}`;
+    else if(KID_PAST.test(x) || /\bfull marks|\bscored|\b\d+\s*\/\s*\d+/i.test(x) && /^\w+ed\b/.test(x)) out = `${kid} ${body}`;
+    else if(/^\w+ed\b/i.test(x)) out = `${kid} ${body}`;
+    else if(/\bfull marks\b/i.test(x)) out = `${kid} scored ${body.replace(/^(scored|got)\s+/i,'')}`;
+    else out = `We covered ${body}`;
+  } else if(section==='improve'){
+    if(/^(needs? to|should|must|has to|have to)\b/i.test(x)) out = `${kid} ${body.replace(/^need to/i,'needs to').replace(/^have to/i,'has to')}`;
+    else if(BASE_VERB.test(x)) out = `I will encourage ${kid} to ${body}`;
+    else out = `${kid} would benefit from more attention to ${body}`;
+  } else if(section==='homework'){
+    if(BASE_VERB.test(x)) out = `${kid} is to ${body}`;
+    else out = `${kid} is to complete ${body}`;
+  } else if(section==='next'){
+    if(/^continu(e|ing)\b/i.test(x) || BASE_VERB.test(x)) out = `We will ${body.replace(/^continuing/,'continue')}`;
+    else if(/^\w+ing\b/i.test(x)) out = `We will be ${body}`;
+    else out = `We will work on ${body}`;
+  } else if(section==='ahead'){
+    if(BASE_VERB.test(x)) out = `We will ${body}`;
+    else out = `We will move on to ${body}`;
+  } else out = x;
+  out = out.replace(/\b(we will|we) (we will|we)\b/gi,'$1').replace(/\s+/g,' ').trim();
+  return label ? `${label}: ${capFirst(out)}` : capFirst(out);
+}
+const polishBlock = (text, section, kid) => lines(text).map(x=>polishLine(x, section, kid)).filter(Boolean).join('\n');
+
+async function llmPolishSections(l, sid){
+  const eng = await loadLLM(); const s=stu(sid); const kid=firstName(s.name);
+  const src = { summary:lines(l.covered), improvement:lines(l.improve), homework:lines(l.homework), next_lesson:lines(l.next), looking_ahead:lines(l.ahead) };
+  const sys = `You help a private tutor in Singapore write a progress report to a parent. Rewrite every note into one clear, polished, professional sentence in British English. Keep every fact exactly: topics, numbers, page numbers, scores and names. Never add facts that are not in the notes. Refer to the student as ${kid}. Use "we" for what was done in class and "I will" for the tutor's own plans. If a note starts with a label followed by a colon, keep that label. Reply with JSON only, using the same keys and the same number of items in each list.`;
+  const r = await eng.chat.completions.create({ messages:[{role:'system',content:sys},{role:'user',content:JSON.stringify(src)}], temperature:0.3, max_tokens:700 });
+  const txt = r.choices?.[0]?.message?.content||''; const j = txt.slice(txt.indexOf('{'), txt.lastIndexOf('}')+1);
+  let out; try{ out = JSON.parse(j); }catch(e){ throw new Error('the model’s answer could not be read'); }
+  const pick = (k, sec) => { const a = Array.isArray(out[k]) ? out[k].map(x=>String(x).trim()).filter(Boolean) : []; return (a.length===src[k].length ? a : src[k].map(x=>polishLine(x,sec,kid))).join('\n'); };
+  return { covered:pick('summary','summary'), improve:pick('improvement','improve'), homework:pick('homework','homework'), next:pick('next_lesson','next'), ahead:pick('looking_ahead','ahead') };
+}
+
+function composeReport(l0, sid, o){
+  const s=stu(sid), kid=firstName(s.name), subj=l0.subject||s.subject||'';
+  const l = o.texts ? {...l0, ...o.texts} : o.polish ? {...l0, covered:polishBlock(l0.covered,'summary',kid), improve:polishBlock(l0.improve,'improve',kid), homework:polishBlock(l0.homework,'homework',kid), next:polishBlock(l0.next,'next',kid), ahead:polishBlock(l0.ahead,'ahead',kid)} : l0;
   const a=(l.attendance||{})[sid]||'present', absent=a==='absent';
   const H = t => `*${t}*`; const bl = arr => arr.map(x=>'• '+sentence(x)).join('\n');
   const out=[];
@@ -1042,10 +1117,10 @@ function openWA(phone, text){
 
 function composeSheet(lid, sid){
   const l = lessonById(lid), s = stu(sid);
-  const st = { tone:S.settings.tone, seed:1, covered:true, improve:true, homework:true, next:true, nextDate:true, ahead:true, exam:true, focus:false, remarks:false, payment:false };
+  const st = { tone:S.settings.tone, seed:1, polish:S.settings.polish!==false, texts:null, covered:true, improve:true, homework:true, next:true, nextDate:true, ahead:true, exam:true, focus:false, remarks:false, payment:false };
   const f0 = feeStatus(s, ym(l.date)); const owe = f0.due-f0.paid;
   let edited=false;
-  const toggles = [['covered','Summary'],['improve','Improvement'],['homework','Homework'],['next','Next plan'],['nextDate','Next date'],['ahead','Looking ahead'],['exam','Exam'],['remarks','Remarks'],['payment',`Fee reminder${owe>0?` (${money(owe)}${f0.dueDate?`, due ${fmtDate(f0.dueDate)}`:''})`:''}`]];
+  const toggles = [['polish','Polish wording'],['covered','Summary'],['improve','Improvement'],['homework','Homework'],['next','Next plan'],['nextDate','Next date'],['ahead','Looking ahead'],['exam','Exam'],['remarks','Remarks'],['payment',`Fee reminder${owe>0?` (${money(owe)}${f0.dueDate?`, due ${fmtDate(f0.dueDate)}`:''})`:''}`]];
   const now = new Date();
   openSheet(()=>({ html:`<div class="seg" id="toneSeg">${[['report','Report'],['warm','Warm'],['pro','Formal'],['brief','Short']].map(([k,lab])=>`<button class="${st.tone===k?'on':''}" data-tone="${k}">${lab}</button>`).join('')}</div>
     <span class="label">Include</span>
@@ -1061,11 +1136,13 @@ function composeSheet(lid, sid){
   const regen = async () => { if(edited && !(await ask('Replace your edits with a freshly written message?','Replace'))) return false; box.value=compose(l,sid,st); edited=false; grow(); return true; };
   box.addEventListener('input', ()=>{ edited=true; grow(); });
   $('#toneSeg',w).addEventListener('click', async e=>{ const b=e.target.closest('[data-tone]'); if(!b) return; const prev=st.tone; st.tone=b.dataset.tone; if((await regen())===false){ st.tone=prev; return; } $$('#toneSeg button',w).forEach(x=>x.classList.toggle('on',x===b)); });
-  $('#incl',w).addEventListener('click', async e=>{ const b=e.target.closest('[data-k]'); if(!b) return; const k=b.dataset.k; st[k]=!st[k]; if((await regen())===false){ st[k]=!st[k]; return; } b.classList.toggle('on',st[k]); b.setAttribute('aria-pressed',st[k]); });
-  $('#regen',w).addEventListener('click', ()=>{ st.seed++; edited=false; regen(); });
+  $('#incl',w).addEventListener('click', async e=>{ const b=e.target.closest('[data-k]'); if(!b) return; const k=b.dataset.k; st[k]=!st[k]; if(k==='polish'){ st.texts=null; S.settings.polish=st[k]; save(); } if((await regen())===false){ st[k]=!st[k]; return; } b.classList.toggle('on',st[k]); b.setAttribute('aria-pressed',st[k]); });
+  $('#regen',w).addEventListener('click', ()=>{ st.seed++; st.texts=null; edited=false; regen(); });
   $('#copyBtn',w).addEventListener('click', async()=>{ try{ await navigator.clipboard.writeText(box.value); toast('Copied'); }catch(e){ box.select(); document.execCommand('copy'); toast('Copied'); } });
   $('#aiBtn',w)?.addEventListener('click', async e=>{ const b=e.currentTarget; b.disabled=true; $('#composeStatus',w).textContent = llm.engine?'Writing…':'Loading the model (the first time takes a while)…';
-    try{ const r = await llmRewrite(box.value, l, sid, st.tone); box.value=r; edited=true; grow(); $('#composeStatus',w).textContent='Polished on your phone.'; }
+    try{ if(st.tone==='report'){ if(edited && !(await ask('Replace your edits with the AI-polished version?','Replace'))){ b.disabled=false; return; } st.texts = await llmPolishSections(l, sid); box.value=compose(l,sid,st); edited=false; }
+      else { box.value = await llmRewrite(box.value, l, sid, st.tone); edited=true; }
+      grow(); $('#composeStatus',w).textContent='Polished on your phone. Review it before sending.'; }
     catch(err){ $('#composeStatus',w).textContent = 'AI unavailable ('+(err.message||err)+'). Your message is unchanged.'; }
     b.disabled=false; });
   $('#sendWA',w).addEventListener('click', ()=>{ openWA(s.parentPhone, box.value); l.sent=l.sent||{}; l.sent[sid]=true; save(); setTimeout(()=>{ closeSheet(); refresh(); toast('Marked as sent'); },500); });
