@@ -327,6 +327,7 @@ let S;
 try { S = JSON.parse(localStorage.getItem(KEY)) || DEFAULT(); } catch(e){ S = DEFAULT(); }
 S.settings = Object.assign(DEFAULT().settings, S.settings||{});
 ['students','lessons','payments'].forEach(k=>{ if(!Array.isArray(S[k])) S[k]=[]; });
+S.students.forEach(s=>{ if(s.rateType!=='month') s.rateType='hour'; });
 if(!S.settings.reportMigrated){ S.settings.tone='report'; S.settings.reportMigrated=true; }
 function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){ toast('Could not save — storage is full'); } }
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(()=>{});
@@ -355,7 +356,7 @@ const fromMin = n => `${pad(Math.floor(n/60)%24)}:${pad(n%60)}`;
 const endTime = l => fromMin(toMin(l.start)+(+l.dur||60));
 const daysBetween = (a,b) => Math.round((pd(b)-pd(a))/86400000);
 const durLabel = m => { m=+m; const h=Math.floor(m/60), r=m%60; return h? (r? `${h}h ${r}m` : `${h}h`) : `${r}m`; };
-const money = n => `${S.settings.currency}${(+n||0).toLocaleString(undefined,{maximumFractionDigits:2})}`;
+const money = n => { n=Math.round((+n||0)*100)/100; return `${S.settings.currency}${n.toLocaleString('en-SG',Number.isInteger(n)?{maximumFractionDigits:0}:{minimumFractionDigits:2,maximumFractionDigits:2})}`; };
 const firstName = n => (n||'').trim().split(/\s+/)[0] || 'your child';
 const initials = n => (n||'?').trim().split(/\s+/).slice(0,2).map(x=>x[0]).join('').toUpperCase();
 function choose(msg, buttons){
@@ -387,11 +388,12 @@ function upcomingExams(sid, from, within){
   return out.sort((a,b)=>a.date.localeCompare(b.date));
 }
 /* Fees */
+function feeHours(s, m){ const ls = S.lessons.filter(l=>l.studentIds.includes(s.id) && ym(l.date)===m && l.status!=='cancelled' && (l.attendance?.[s.id]!=='absent')); return {n:ls.length, mins:ls.reduce((a,l)=>a+(+l.dur||0),0)}; }
+const hrsLabel = mins => { const h=Math.round(mins/60*100)/100; return `${h} hour${h===1?'':'s'}`; };
 function feeDue(s, m){
   if(!s.rate) return 0;
   if(s.rateType==='month') return S.lessons.some(l=>l.studentIds.includes(s.id) && ym(l.date)===m && l.status!=='cancelled') ? +s.rate : 0;
-  const n = S.lessons.filter(l=>l.studentIds.includes(s.id) && ym(l.date)===m && l.status!=='cancelled' && (l.attendance?.[s.id]!=='absent')).length;
-  return n*(+s.rate);
+  return Math.round(feeHours(s,m).mins/60*(+s.rate)*100)/100;
 }
 const feePaid = (sid,m) => S.payments.filter(p=>p.studentId===sid && p.month===m).reduce((a,p)=>a+(+p.amount||0),0);
 const payPlan = s => Object.assign({type:'day', day:1, when:'same'}, s.pay||{});
@@ -425,9 +427,9 @@ const dueWords = f => { if(!f.dueDate) return 'are due'; const x=pd(f.dueDate), 
   return f.days<0 ? `were due on ${dm}` : f.days===0 ? 'are due today' : f.days===1 ? 'are due tomorrow' : `are due on ${dm}`; };
 function feeReminder(s, m){
   const f = feeStatus(s,m), owe = f.due-f.paid, mon = MONL[+m.slice(5)-1];
-  const n = s.rateType!=='month' && s.rate ? Math.round(f.due/s.rate) : 0;
+  const fh = s.rateType!=='month' && s.rate ? feeHours(s,m) : null;
   const out = [s.parentName?`Hi ${s.parentName},`:'Hi,',
-    `A gentle reminder that ${firstName(s.name)}'s tuition fees for ${mon}${n?` (${n} lesson${n>1?'s':''} at ${money(s.rate)})`:''} ${dueWords(f)}. The amount ${f.paid>0?'remaining ':''}is ${money(owe)}${f.paid>0?`, as ${money(f.paid)} has been received`:''}.`,
+    `A gentle reminder that ${firstName(s.name)}'s tuition fees for ${mon}${fh&&fh.n?` (${fh.n} lesson${fh.n>1?'s':''}, ${hrsLabel(fh.mins)} at ${money(s.rate)} per hour)`:''} ${dueWords(f)}. The amount ${f.paid>0?'remaining ':''}is ${money(owe)}${f.paid>0?`, as ${money(f.paid)} has been received`:''}.`,
     'Thank you!'];
   const sign = S.settings.signOff || S.settings.tutorName; if(sign) out.push(sign);
   return out.join('\n\n');
@@ -625,8 +627,8 @@ SCREENS.payments = () => {
     <div class="bar" style="margin-top:16px"><i class="on" style="flex:${Math.max(0.001,Math.min(got,due))}"></i><i style="flex:${Math.max(0.001,due-got)}"></i></div></section>`;
   if(!list.length) return h + `<div class="soft-empty" style="margin-top:16px">Add students with a fee to track payments here.</div>`;
   h += `<div class="sec"><h2>Students</h2><span class="sub small">Tap to record a payment</span></div>`;
-  h += fs.map(({s,f})=>`<button class="scard" data-act="payStudent" data-id="${s.id}">${avatar(s)}<div class="grow"><div class="t">${esc(s.name)}</div><div class="sub small">${f.due?`${money(f.paid)} of ${money(f.due)}`:(s.rate?'No lessons this month':'No fee set')}${s.rate?(s.rateType==='month'?', monthly':`, ${money(s.rate)} per lesson`):''}</div>${s.rate?`<div class="muted small">Pays ${esc(planLabel(s))}${f.dueDate&&f.key!=='paid'?` (${esc(fmtDate(f.dueDate))})`:''}</div>`:''}</div>${feePill(f)}</button>`).join('');
-  return h + `<p class="muted small" style="margin:10px 6px">Per-lesson fees count this month’s lessons, leaving out cancelled lessons and absences.</p>`;
+  h += fs.map(({s,f})=>`<button class="scard" data-act="payStudent" data-id="${s.id}">${avatar(s)}<div class="grow"><div class="t">${esc(s.name)}</div><div class="sub small">${f.due?`${money(f.paid)} of ${money(f.due)}`:(s.rate?'No lessons this month':'No fee set')}${s.rate?(s.rateType==='month'?', monthly':`, ${hrsLabel(feeHours(s,m).mins)} at ${money(s.rate)}/hr`):''}</div>${s.rate?`<div class="muted small">Pays ${esc(planLabel(s))}${f.dueDate&&f.key!=='paid'?` (${esc(fmtDate(f.dueDate))})`:''}</div>`:''}</div>${feePill(f)}</button>`).join('');
+  return h + `<p class="muted small" style="margin:10px 6px">Hourly fees use the hours of this month’s lessons, leaving out cancelled lessons and absences.</p>`;
 };
 
 SCREENS.settings = () => {
@@ -816,7 +818,7 @@ function rescheduleSheet(id){
 /* Student */
 function studentForm(id){
   const s = id ? stu(id) : null;
-  const v = s || {name:'',level:'',subject:'',school:'',parentName:'',parentPhone:'',location:'',rate:'',rateType:'lesson',active:true};
+  const v = s || {name:'',level:'',subject:'',school:'',parentName:'',parentPhone:'',location:'',rate:'',rateType:'hour',active:true};
   openSheet(()=>`<form id="stForm">
     <div class="form-card"><div class="fc-title">${I.user} Student</div>
       <label class="field"><span>Name</span><input class="input" name="name" value="${esc(v.name)}" required autocomplete="off" placeholder="e.g. Auni"></label>
@@ -827,8 +829,9 @@ function studentForm(id){
       <label class="field"><span>How you address them</span><input class="input" name="parentName" value="${esc(v.parentName)}" placeholder="e.g. Mdm Siti"></label>
       <label class="field"><span>WhatsApp number</span><input class="input" type="tel" name="parentPhone" value="${esc(v.parentPhone)}" placeholder="9123 4567"></label></div>
     <div class="form-card"><div class="fc-title">${I.money} Fees</div>
-      <div class="grid2"><label class="field"><span>Amount (${esc(S.settings.currency)})</span><input class="input" type="number" inputmode="decimal" step="any" name="rate" value="${esc(v.rate)}"></label>
-      <div class="field"><span>Charged</span><div class="chips"><label class="chip"><input type="radio" name="rateType" value="lesson" ${v.rateType!=='month'?'checked':''}>Per lesson</label><label class="chip"><input type="radio" name="rateType" value="month" ${v.rateType==='month'?'checked':''}>Monthly</label></div></div></div>
+      <div class="grid2"><label class="field"><span>Rate (${esc(S.settings.currency)})</span><input class="input" type="number" inputmode="decimal" step="any" name="rate" value="${esc(v.rate)}"></label>
+      <div class="field"><span>Charged</span><div class="chips"><label class="chip"><input type="radio" name="rateType" value="hour" ${v.rateType!=='month'?'checked':''}>Per hour</label><label class="chip"><input type="radio" name="rateType" value="month" ${v.rateType==='month'?'checked':''}>Monthly</label></div></div></div>
+      <p class="hint" id="rateHint"></p>
       <span class="label" style="margin-top:0">Payment due</span>
       <div class="chips" style="margin-bottom:12px">${[['day','On a set day'],['first','At first lesson of the month'],['last','At last lesson of the month']].map(([k,lab])=>`<label class="chip"><input type="radio" name="payType" value="${k}" ${payPlan(v).type===k?'checked':''}>${lab}</label>`).join('')}</div>
       <div id="payDayBox" ${payPlan(v).type!=='day'?'hidden':''}><div class="grid2"><label class="field"><span>Day of the month</span><input class="input" type="number" inputmode="numeric" min="1" max="31" name="payDay" value="${payPlan(v).day}"></label>
@@ -840,7 +843,8 @@ function studentForm(id){
     <button class="btn block" type="submit">${s?'Save changes':'Add student'}</button>
     ${s?`<button class="textlink" type="button" data-act="deleteStudent" data-id="${s.id}">Delete student</button>`:''}</form>`, s?'Edit student':'New student', true);
   const sf = $('#stForm', topWrap());
-  const hint = () => { const fd=new FormData(sf); const type=fd.get('payType')||'day'; const m=ym(today()); const day=Math.min(31,Math.max(1,+fd.get('payDay')||1)); const when=fd.get('payWhen');
+  const hint = () => { const fd=new FormData(sf); const r=+fd.get('rate');
+    $('#rateHint',sf).textContent = !r ? '' : fd.get('rateType')==='month' ? `A fixed ${money(r)} each month that has lessons.` : `A 1-hour lesson is ${money(r)}, 1h 30m is ${money(r*1.5)} and 2h is ${money(r*2)}.`; const type=fd.get('payType')||'day'; const m=ym(today()); const day=Math.min(31,Math.max(1,+fd.get('payDay')||1)); const when=fd.get('payWhen');
     $('#payDayBox',sf).hidden = type!=='day';
     $('#payHint',sf).textContent = type==='first' ? `Example: ${MONL[+m.slice(5)-1]} fees are due at the first ${MONL[+m.slice(5)-1]} lesson.` : type==='last' ? `Example: ${MONL[+m.slice(5)-1]} fees are due at the last ${MONL[+m.slice(5)-1]} lesson.`
       : `Example: ${MONL[+m.slice(5)-1]} fees are due on ${day} ${MONL[+(when==='next'?addMonths(m,1):m).slice(5)-1]}.${day>28?' In shorter months, the last day of the month is used.':''}`; };
@@ -861,7 +865,7 @@ function studentSheet(id){
     const past = all.filter(l=>l.date<=t && l.status==='done').reverse().slice(0,6);
     const months = [0,-1,-2].map(n=>addMonths(ym(t),n));
     let h = `<div class="s-hero" style="--c:${c}"><div style="display:flex;gap:14px;align-items:center">${avatar(s,'lg')}<div style="min-width:0"><h2 style="margin:0">${esc(s.name)}</h2><div style="opacity:.9">${esc([s.level,s.subject].filter(Boolean).join(' '))}${s.school?', '+esc(s.school):''}</div></div></div>
-      <div class="kv" style="margin-top:14px">${s.parentName||s.parentPhone?`<span>${I.phone}${esc([s.parentName,s.parentPhone].filter(Boolean).join(', '))}</span>`:''}${s.location?`<span>${I.pin}${esc(s.location)}</span>`:''}${s.rate?`<span>${I.money}${money(s.rate)} per ${s.rateType==='month'?'month':'lesson'}, paid ${esc(planLabel(s))}</span>`:''}</div></div>
+      <div class="kv" style="margin-top:14px">${s.parentName||s.parentPhone?`<span>${I.phone}${esc([s.parentName,s.parentPhone].filter(Boolean).join(', '))}</span>`:''}${s.location?`<span>${I.pin}${esc(s.location)}</span>`:''}${s.rate?`<span>${I.money}${money(s.rate)} per ${s.rateType==='month'?'month':'hour'}, paid ${esc(planLabel(s))}</span>`:''}</div></div>
       <div class="tiles"><button class="tile wa" data-act="waBlank" data-id="${s.id}">${I.wa}WhatsApp</button><button class="tile" data-act="newLesson" data-sid="${s.id}">${I.cal}Schedule</button><button class="tile" data-act="payStudent" data-id="${s.id}">${I.money}Fees</button><button class="tile" data-act="editStudent" data-id="${s.id}">${I.edit}Edit</button></div>
       <span class="label">Currently learning</span>
       <textarea class="input" rows="2" data-sbind="${s.id}.learning" placeholder="e.g. Multiplication tables; building the model drawing habit">${esc(s.learning)}</textarea>
@@ -886,7 +890,7 @@ function paySheet(sid, m){
   openSheet(()=>{
     const s = stu(sid); const f = feeStatus(s,m);
     const ps = S.payments.filter(p=>p.studentId===sid && p.month===m);
-    return `<div class="card pad" style="margin-bottom:12px;display:flex;align-items:center;gap:12px">${avatar(s)}<div style="flex:1"><div style="font-weight:700">${esc(s.name)}, ${fmtMonth(m)}</div><div class="sub small">${money(f.paid)} paid of ${money(f.due)}</div><div class="muted small">${f.dueDate?`Due ${esc(fmtDate(f.dueDate,true))}`:'Due '+esc(planLabel(s))+' (no lessons yet)'}</div></div>${feePill(f)}</div>
+    return `<div class="card pad" style="margin-bottom:12px;display:flex;align-items:center;gap:12px">${avatar(s)}<div style="flex:1"><div style="font-weight:700">${esc(s.name)}, ${fmtMonth(m)}</div><div class="sub small">${money(f.paid)} paid of ${money(f.due)}</div>${s.rateType!=='month'&&s.rate?(()=>{const fh=feeHours(s,m); return `<div class="muted small">${fh.n} lesson${fh.n===1?'':'s'}, ${hrsLabel(fh.mins)} at ${money(s.rate)}/hr</div>`;})():''}<div class="muted small">${f.dueDate?`Due ${esc(fmtDate(f.dueDate,true))}`:'Due '+esc(planLabel(s))+' (no lessons yet)'}</div></div>${feePill(f)}</div>
       ${owing(f)?`<button class="btn wa block" style="margin-bottom:12px" data-act="waFee" data-id="${sid}" data-m="${m}">${I.wa} Send fee reminder on WhatsApp</button>${(s.reminded||{})[m]?`<p class="hint" style="margin:-4px 4px 12px;text-align:center">Last reminder sent ${esc(fmtDate(s.reminded[m]))}</p>`:''}`:''}
       ${ps.length?`<div class="card" style="margin-bottom:12px">${ps.map(p=>`<div class="row"><span class="ic mint">${I.check}</span><div class="grow"><div class="t">${money(p.amount)} by ${esc(p.method)}</div><div class="d">${esc(fmtDate(p.date))}${p.note?', '+esc(p.note):''}</div></div><button class="mini-btn" style="box-shadow:none" data-act="delPay" data-id="${p.id}" aria-label="Delete payment">${I.x}</button></div>`).join('')}</div>`:''}
       <form id="payForm" data-sid="${sid}"><div class="form-card"><div class="fc-title">${I.money} Record a payment</div>
@@ -1153,11 +1157,11 @@ function exportIcs(){
 /* ---------- Sample data ---------- */
 function loadSample(){
   const t = today(); const mk = (name,level,subject,location,parentName,phone,rate,rateType,learning,exams) => { const s={id:uid(),name,level,subject,school:'',location,parentName,parentPhone:phone,rate,rateType,active:true,learning,notes:'',exams:exams.map(([title,off])=>({id:uid(),title,date:addDays(t,off)}))}; S.students.push(s); return s; };
-  const a = mk('Ethan Tan','P5','Math','Tampines (home)','Mrs Tan','9123 4567',60,'lesson','Fractions and ratio word problems; model drawing',[['School SA1',120]]);
+  const a = mk('Ethan Tan','P5','Math','Tampines (home)','Mrs Tan','9123 4567',60,'hour','Fractions and ratio word problems; model drawing',[['School SA1',120]]);
   const b = mk('Chloe Lim','P6','Math','Punggol (home)','Mr Lim','9876 5432',320,'month','PSLE revision: heuristics, speed and percentage',[['PSLE Math Paper 1',300],['Prelim practice paper',12]]);
-  const c = mk('Aiden Koh','S3','A-Math','Online','Ms Koh','8234 5678',80,'lesson','Quadratic functions and surds',[['WA1',25]]);
-  const d = mk('Zara Ng','P2','Math','Bedok centre','Mrs Ng','9345 6789',45,'lesson','Addition and subtraction within 1000; money',[]);
-  const e = mk('Ryan Lee','Adult','Programming','Online','Ryan','9456 7890',70,'lesson','C# basics: loops and methods',[]);
+  const c = mk('Aiden Koh','S3','A-Math','Online','Ms Koh','8234 5678',70,'hour','Quadratic functions and surds',[['WA1',25]]);
+  const d = mk('Zara Ng','P2','Math','Bedok centre','Mrs Ng','9345 6789',45,'hour','Addition and subtraction within 1000; money',[]);
+  const e = mk('Ryan Lee','Adult','Programming','Online','Ryan','9456 7890',70,'hour','C# basics: loops and methods',[]);
   const NOTES = { [a.id]:['Fractions: Ethan added fractions with unlike denominators accurately after a short recap\nRatio: we worked through before-and-after problems, and he set up the ratios correctly with some guidance','Assessment book p. 34–36','Continue with ratio, focusing on repeated identity questions'],
     [b.id]:['PSLE 2025 Paper 2, Q1–Q10\nSpeed: average speed problems','Finish Paper 2 Q11–Q17','Percentage: GST and discount'],
     [c.id]:['Completing the square\nNature of roots','Textbook Ex 2B Q1–12','Surds: rationalising denominators'],
