@@ -333,6 +333,7 @@ try { S = JSON.parse(localStorage.getItem(KEY)) || DEFAULT(); } catch(e){ S = DE
 S.settings = Object.assign(DEFAULT().settings, S.settings||{});
 ['students','lessons','payments'].forEach(k=>{ if(!Array.isArray(S[k])) S[k]=[]; });
 S.students.forEach(s=>{ if(s.rateType!=='month') s.rateType='hour'; });
+if(!S.settings.aiProvider) S.settings.aiProvider = S.settings.engine==='llm' ? 'webllm' : 'none';
 if(!S.settings.reportMigrated){ S.settings.tone='report'; S.settings.reportMigrated=true; }
 function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){ toast('Could not save — storage is full'); } }
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(()=>{});
@@ -645,14 +646,22 @@ SCREENS.settings = () => {
     <div class="grid2"><label class="field"><span>Country code</span><input class="input" data-set="country" inputmode="numeric" value="${esc(st.country)}"></label><label class="field"><span>Currency</span><input class="input" data-set="currency" value="${esc(st.currency)}"></label></div></div>
   <div class="form-card"><div class="fc-title">${I.wa} Parent updates</div>
     <label class="field"><span>Default style</span><select class="input" data-set="tone"><option value="report" ${st.tone==='report'?'selected':''}>Progress report</option><option value="warm" ${st.tone==='warm'?'selected':''}>Warm and friendly</option><option value="pro" ${st.tone==='pro'?'selected':''}>Formal</option><option value="brief" ${st.tone==='brief'?'selected':''}>Short summary</option></select></label>
-    <label class="field"><span>Writing engine</span><select class="input" data-set="engine"><option value="compose" ${st.engine==='compose'?'selected':''}>Built-in writer (instant, offline)</option><option value="llm" ${st.engine==='llm'?'selected':''}>On-device AI model (experimental)</option></select></label>
-    ${st.engine==='llm'?`<label class="field"><span>Model</span><select class="input" data-set="llmModel">
+    <label class="field"><span>AI writing</span><select class="input" data-set="aiProvider">${[['none','Off: built-in wording (offline)'],['claude','Claude by Anthropic (best writing)'],['gemini','Google Gemini (free tier available)'],['webllm','On-device model (experimental)']].map(([v,lab])=>`<option value="${v}" ${aiProvider()===v?'selected':''}>${lab}</option>`).join('')}</select></label>
+    ${aiProvider()==='claude'||aiProvider()==='gemini' ? (()=>{ const p=aiProvider(); return `
+      <label class="field"><span>Your ${p==='claude'?'Claude':'Gemini'} API key</span><input class="input" type="password" autocomplete="off" spellcheck="false" data-set="aiKey_${p}" value="${esc(st['aiKey_'+p]||'')}" placeholder="${p==='claude'?'sk-ant-…':'AIza…'}"></label>
+      <p class="hint">${p==='claude'?'Create a key at <a style="color:var(--gold)" href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>. It’s paid per use, and one parent update typically costs a fraction of a cent.':'Create a free key at <a style="color:var(--gold)" href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener">aistudio.google.com</a>. On Google’s free tier, what you send may be used to improve Google’s products; a paid key avoids that.'}</p>
+      <label class="field"><span>Model (optional)</span><input class="input" data-set="aiModel_${p}" value="${esc(st['aiModel_'+p]||'')}" placeholder="${AI_DEFAULT_MODEL[p]}" autocomplete="off" spellcheck="false"></label>
+      <p class="hint">Student and parent names are replaced before anything is sent, then put back on your phone. Your key is stored only on this phone and is left out of backups.</p>
+      <button class="set-row" style="width:100%;padding:4px 4px 12px" data-act="toggleAiAuto"><div style="flex:1;text-align:left"><b>Polish automatically</b><div class="muted small">When you open a parent update</div></div><span class="pill ${st.aiAuto!==false?'mint':''}">${st.aiAuto!==false?'On':'Off'}</span></button>
+      <button class="btn soft block" style="margin-bottom:14px" data-act="testAI">Test AI connection</button>`; })() : ''}
+    ${aiProvider()==='webllm'?`<label class="field"><span>Model</span><select class="input" data-set="llmModel">
         <option value="Qwen2.5-0.5B-Instruct-q4f16_1-MLC" ${st.llmModel.startsWith('Qwen2.5-0.5B')?'selected':''}>Qwen 2.5 0.5B, about 300 MB, fastest</option>
         <option value="Llama-3.2-1B-Instruct-q4f16_1-MLC" ${st.llmModel.startsWith('Llama-3.2-1B')?'selected':''}>Llama 3.2 1B, about 700 MB</option>
         <option value="Qwen2.5-1.5B-Instruct-q4f16_1-MLC" ${st.llmModel.startsWith('Qwen2.5-1.5B')?'selected':''}>Qwen 2.5 1.5B, about 1 GB, best writing</option></select></label>
-      <p class="hint">Downloads once on Wi-Fi, then runs on your phone with nothing sent anywhere. Needs iOS 26 or later. ${gpu?'<b style="color:var(--mint)">Supported on this device.</b>':'<b style="color:var(--coral)">Not supported in this browser.</b>'}</p>
+      <p class="hint">Downloads once on Wi-Fi, then runs on your device with nothing sent anywhere. Small models write less smoothly than Claude or Gemini. ${gpu?'<b style="color:var(--mint)">Supported on this device.</b>':'<b style="color:var(--coral)">Not supported in this browser.</b>'}</p>
       <button class="btn soft block" data-act="loadLLM" ${gpu?'':'disabled'}>${llm.engine?'Model ready':'Download and load model'}</button>
       <div id="llmStatus" class="hint" style="margin:8px 4px 0">${esc(llm.status||'')}</div><div class="progress"><i id="llmBar" style="width:${(llm.progress||0)*100}%"></i></div><div style="height:12px"></div>`:''}
+    ${aiProvider()==='none'?`<p class="hint">Turn on AI writing for smooth, natural sentences. Without it, Tutorbook tidies your notes with fixed rules.</p>`:''}
   </div>
   <div class="form-card"><div class="fc-title">${I.spark} New school year</div>
     <p class="hint" style="margin:-6px 4px 12px">Every January, Tutorbook suggests each student’s next level (P5 to P6, P6 to S1 and so on) for you to check before anything changes.</p>
@@ -664,7 +673,7 @@ SCREENS.settings = () => {
     <button class="set-row" style="width:100%" data-act="exportIcs"><span class="ic mint">${I.cal}</span><div style="flex:1;text-align:left"><b>Export to Apple Calendar</b></div>${I.chev}</button>
     <button class="set-row" style="width:100%" data-act="loadSample"><span class="ic amber">${I.spark}</span><div style="flex:1;text-align:left"><b>Add sample data</b></div>${I.chev}</button>
     <button class="set-row" style="width:100%" data-act="wipe"><span class="ic coral">${I.trash}</span><div style="flex:1;text-align:left;color:var(--coral)"><b>Erase everything</b></div></button></div>
-  <p class="muted small" style="text-align:center;margin-top:18px">Tutorbook 1.4, ${S.students.length} students, ${S.lessons.length} lessons</p>`;
+  <p class="muted small" style="text-align:center;margin-top:18px">Tutorbook 1.5, ${S.students.length} students, ${S.lessons.length} lessons</p>`;
 };
 
 /* ---------- Sheets ---------- */
@@ -989,17 +998,6 @@ function polishLine(raw, section, kid){
 }
 const polishBlock = (text, section, kid) => lines(text).map(x=>polishLine(x, section, kid)).filter(Boolean).join('\n');
 
-async function llmPolishSections(l, sid){
-  const eng = await loadLLM(); const s=stu(sid); const kid=firstName(s.name);
-  const src = { summary:lines(l.covered), improvement:lines(l.improve), homework:lines(l.homework), next_lesson:lines(l.next), looking_ahead:lines(l.ahead) };
-  const sys = `You help a private tutor in Singapore write a progress report to a parent. Rewrite every note into one clear, polished, professional sentence in British English. Keep every fact exactly: topics, numbers, page numbers, scores and names. Never add facts that are not in the notes. Refer to the student as ${kid}. Use "we" for what was done in class and "I will" for the tutor's own plans. If a note starts with a label followed by a colon, keep that label. Reply with JSON only, using the same keys and the same number of items in each list.`;
-  const r = await eng.chat.completions.create({ messages:[{role:'system',content:sys},{role:'user',content:JSON.stringify(src)}], temperature:0.3, max_tokens:700 });
-  const txt = r.choices?.[0]?.message?.content||''; const j = txt.slice(txt.indexOf('{'), txt.lastIndexOf('}')+1);
-  let out; try{ out = JSON.parse(j); }catch(e){ throw new Error('the model’s answer could not be read'); }
-  const pick = (k, sec) => { const a = Array.isArray(out[k]) ? out[k].map(x=>String(x).trim()).filter(Boolean) : []; return (a.length===src[k].length ? a : src[k].map(x=>polishLine(x,sec,kid))).join('\n'); };
-  return { covered:pick('summary','summary'), improve:pick('improvement','improve'), homework:pick('homework','homework'), next:pick('next_lesson','next'), ahead:pick('looking_ahead','ahead') };
-}
-
 function composeReport(l0, sid, o){
   const s=stu(sid), kid=firstName(s.name), subj=l0.subject||s.subject||'';
   const l = o.texts ? {...l0, ...o.texts} : o.polish ? {...l0, covered:polishBlock(l0.covered,'summary',kid), improve:polishBlock(l0.improve,'improve',kid), homework:polishBlock(l0.homework,'homework',kid), next:polishBlock(l0.next,'next',kid), ahead:polishBlock(l0.ahead,'ahead',kid)} : l0;
@@ -1099,12 +1097,69 @@ async function loadLLM(){
   return llm.engine;
 }
 function updLLMUi(){ const st=$('#llmStatus'), b=$('#llmBar'), c=$('#composeStatus'); if(st) st.textContent=llm.status; if(b) b.style.width=(llm.progress*100)+'%'; if(c) c.textContent=llm.status; }
-async function llmRewrite(draft, lesson, sid, tone){
-  const eng = await loadLLM(); const s=stu(sid);
-  const sys = `You rewrite tuition progress updates that a private tutor sends to a parent on WhatsApp. Keep every fact exactly as given (names, dates, times, topics, homework, amounts). Do not invent anything. Tone: ${tone==='report'?'professional progress report; keep the *bold* section headings and • bullet points exactly as structured':tone==='pro'?'polite and professional':tone==='brief'?'very short and clear':'warm, friendly and encouraging, with at most two emojis'}. Under ${tone==='report'?220:130} words. Output only the message.`;
-  const user = `Student: ${s.name} (${s.level} ${lesson.subject}). Rewrite this draft so it reads naturally:\n\n${draft}`;
-  const r = await eng.chat.completions.create({ messages:[{role:'system',content:sys},{role:'user',content:user}], temperature:0.5, max_tokens:320 });
-  return (r.choices?.[0]?.message?.content||'').trim() || draft;
+/* ---------- AI writing: Claude, Gemini or on-device ---------- */
+const AI_DEFAULT_MODEL = { claude:'claude-haiku-5-5', gemini:'gemini-flash-latest' };
+const aiProvider = () => S.settings.aiProvider || 'none';
+const aiReady = () => { const p=aiProvider(); return p==='webllm' ? !!navigator.gpu : (p==='claude'||p==='gemini') && !!String(S.settings['aiKey_'+p]||'').trim(); };
+const aiName = () => ({claude:'Claude', gemini:'Gemini', webllm:'the on-device model'})[aiProvider()] || 'AI';
+async function aiComplete(system, user, opts={}){
+  const p = aiProvider(); const key = String(S.settings['aiKey_'+p]||'').trim(); const model = String(S.settings['aiModel_'+p]||'').trim() || AI_DEFAULT_MODEL[p];
+  if((p==='claude'||p==='gemini') && !key) throw new Error('Add your API key in Settings first.');
+  if(!navigator.onLine && p!=='webllm') throw new Error('You’re offline. The built-in wording is used instead.');
+  if(p==='claude'){
+    const r = await fetch('https://api.anthropic.com/v1/messages', { method:'POST', headers:{ 'content-type':'application/json', 'x-api-key':key, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' },
+      body: JSON.stringify({ model, max_tokens: opts.max||1500, temperature: 0.4, system, messages:[{role:'user', content:user}] }) });
+    const j = await r.json().catch(()=>({})); if(!r.ok) throw new Error(j.error?.message || `Claude returned error ${r.status}`);
+    return (j.content||[]).filter(c=>c.type==='text').map(c=>c.text).join('').trim();
+  }
+  if(p==='gemini'){
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, { method:'POST', headers:{ 'content-type':'application/json', 'x-goog-api-key':key },
+      body: JSON.stringify({ systemInstruction:{parts:[{text:system}]}, contents:[{role:'user', parts:[{text:user}]}], generationConfig:{ temperature:0.4, maxOutputTokens: opts.max||4096, ...(opts.json?{responseMimeType:'application/json'}:{}) } }) });
+    const j = await r.json().catch(()=>({})); if(!r.ok) throw new Error(j.error?.message || `Gemini returned error ${r.status}`);
+    return (j.candidates?.[0]?.content?.parts||[]).map(x=>x.text||'').join('').trim();
+  }
+  if(p==='webllm'){
+    const eng = await loadLLM();
+    const r = await eng.chat.completions.create({ messages:[{role:'system',content:system},{role:'user',content:user}], temperature:0.3, max_tokens: opts.max||900 });
+    return (r.choices?.[0]?.message?.content||'').trim();
+  }
+  throw new Error('AI writing is off. Choose a provider in Settings.');
+}
+/* Names never leave the phone */
+const reEsc = x => x.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+function maskNames(text, s){
+  const pairs = [];
+  if(s.parentName) pairs.push([s.parentName,'PARENT']);
+  [s.name, ...String(s.name||'').split(/\s+/)].filter(n=>n && n.length>1).forEach(n=>pairs.push([n,'STUDENT']));
+  pairs.sort((a,b)=>b[0].length-a[0].length);
+  let t = String(text||''); pairs.forEach(([n,tag])=>{ t = t.replace(new RegExp('\\b'+reEsc(n)+'\\b','gi'), tag); });
+  return t.replace(/\bSTUDENT(\s+STUDENT)+\b/g,'STUDENT');
+}
+const unmask = (t, s) => String(t).replace(/\bSTUDENT\b/g, firstName(s.name)).replace(/\bPARENT\b/g, s.parentName||'Parent');
+const SEC = [['covered','summary','summary'],['improve','improvement','improve'],['homework','homework','homework'],['next','next_lesson','next'],['ahead','looking_ahead','ahead']];
+const notesHash = l => SEC.map(([k])=>l[k]||'').join('\u0001') + '|' + aiProvider() + '|' + (S.settings['aiModel_'+aiProvider()]||'');
+async function aiPolishSections(l, sid){
+  const s = stu(sid); const src = {}; SEC.forEach(([k,jk])=>src[jk] = lines(l[k]).map(x=>maskNames(x,s)));
+  const sys = `You help a private tutor in Singapore write a lesson progress report that will be sent to a parent on WhatsApp. You receive the tutor's rough notes as JSON lists. Rewrite every note into smooth, natural, grammatically correct British English, in the polished but warm tone of an experienced tutor writing to a parent.
+Rules:
+- Reply with JSON only, with exactly the same keys and exactly the same number of items in each list, in the same order.
+- Each item becomes one or two complete, well-joined sentences. No bullet symbols, markdown or emojis.
+- Keep every fact: topics, numbers, fractions, page and question numbers, scores and dates. Do not add facts, praise or advice that are not in the notes.
+- Refer to the student as STUDENT and to the parent as PARENT; these are replaced with real names later. Use she/her or he/him only if the notes do.
+- Use "I" for what the tutor did or will do, and "we" for work done together in class.
+- If a note starts with a short label and a colon (for example "Exam paper:"), keep that label and the colon at the start.
+- summary: what happened in the lesson, past tense. improvement: areas to work on, phrased constructively. homework: what the student must do before the next lesson. next_lesson and looking_ahead: plans, future tense.`;
+  const raw = await aiComplete(sys, JSON.stringify(src, null, 1), {json:true});
+  let out; try{ out = JSON.parse(raw.slice(raw.indexOf('{'), raw.lastIndexOf('}')+1)); }catch(e){ throw new Error('the AI reply could not be read. Try again.'); }
+  const kid = firstName(s.name); const res = {};
+  SEC.forEach(([k,jk,sec])=>{ const a = Array.isArray(out[jk]) ? out[jk].map(x=>unmask(String(x).replace(/\s*\n+\s*/g,' ').replace(/^[•\-*]\s*/,'').trim(), s)).filter(Boolean) : [];
+    res[k] = (a.length===src[jk].length ? a : lines(l[k]).map(x=>polishLine(x, sec, kid))).join('\n'); });
+  return res;
+}
+async function aiRewriteMessage(draft, sid, tone){
+  const s = stu(sid);
+  const sys = `You rewrite a message that a private tutor in Singapore sends to a parent on WhatsApp. Make it read smoothly, with natural grammar and sentence flow. Keep every fact exactly (dates, times, topics, homework, amounts) and do not invent anything. Keep words wrapped in *stars* and any • bullet points. Tone: ${tone==='pro'?'polite, formal and professional':tone==='brief'?'very short and clear':'warm, friendly and encouraging, with at most two emojis'}. Refer to the student as STUDENT and the parent as PARENT. Reply with the message only.`;
+  return unmask(await aiComplete(sys, maskNames(draft, s)), s) || draft;
 }
 
 function waNumber(raw){
@@ -1122,7 +1177,8 @@ function openWA(phone, text){
 
 function composeSheet(lid, sid){
   const l = lessonById(lid), s = stu(sid);
-  const st = { tone:S.settings.tone, seed:1, polish:S.settings.polish!==false, texts:null, covered:true, improve:true, homework:true, next:true, nextDate:true, ahead:true, exam:true, focus:false, remarks:false, payment:false };
+  const cached = (l.ai||{})[sid];
+  const st = { tone:S.settings.tone, seed:1, polish:S.settings.polish!==false, texts: aiReady() && cached && cached.h===notesHash(l) ? cached.texts : null, covered:true, improve:true, homework:true, next:true, nextDate:true, ahead:true, exam:true, focus:false, remarks:false, payment:false };
   const f0 = feeStatus(s, ym(l.date)); const owe = f0.due-f0.paid;
   let edited=false;
   const toggles = [['polish','Polish wording'],['covered','Summary'],['improve','Improvement'],['homework','Homework'],['next','Next plan'],['nextDate','Next date'],['ahead','Looking ahead'],['exam','Exam'],['remarks','Remarks'],['payment',`Fee reminder${owe>0?` (${money(owe)}${f0.dueDate?`, due ${fmtDate(f0.dueDate)}`:''})`:''}`]];
@@ -1132,7 +1188,7 @@ function composeSheet(lid, sid){
     <div class="chips" id="incl">${toggles.map(([k,lab])=>`<button type="button" class="inc ${st[k]?'on':''}" data-k="${k}" aria-pressed="${!!st[k]}">${I.check}${lab}</button>`).join('')}</div>
     <div class="wa-frame"><div class="wa-top"><span class="av" style="--c:#25D366">${esc(initials(s.parentName||s.name))}</span><div><b>${esc(s.parentName||'Parent')}</b><small>${esc(s.parentPhone||'No number saved')}</small></div></div>
       <div class="wa-body"><div class="bubble"><textarea id="msgBox" aria-label="Message">${esc(compose(l,sid,st))}</textarea><span class="tm">${fmtTime(fromMin(now.getHours()*60+now.getMinutes()))} ✓✓</span></div></div></div>
-    <div class="tools"><button id="regen">${I.redo} Rewrite</button>${S.settings.engine==='llm'?`<button id="aiBtn">${I.spark} Polish with AI</button>`:''}<button id="copyBtn">${I.copy} Copy</button></div>
+    <div class="tools"><button id="regen">${I.redo} Rewrite</button>${aiProvider()!=='none'?`<button id="aiBtn">${I.spark} Polish with AI</button>`:''}<button id="copyBtn">${I.copy} Copy</button></div>
     <div id="composeStatus" class="hint" style="margin:8px 4px 0;min-height:16px">Tap the message to edit it. *Stars* show as bold on WhatsApp.</div>`,
     foot:`<button class="btn wa block" id="sendWA">${I.wa} Send to ${esc(s.parentName||'parent')} on WhatsApp</button>` }), `Update for ${s.name}`, true);
   const w = topWrap(); const box = $('#msgBox',w);
@@ -1144,12 +1200,21 @@ function composeSheet(lid, sid){
   $('#incl',w).addEventListener('click', async e=>{ const b=e.target.closest('[data-k]'); if(!b) return; const k=b.dataset.k; st[k]=!st[k]; if(k==='polish'){ st.texts=null; S.settings.polish=st[k]; save(); } if((await regen())===false){ st[k]=!st[k]; return; } b.classList.toggle('on',st[k]); b.setAttribute('aria-pressed',st[k]); });
   $('#regen',w).addEventListener('click', ()=>{ st.seed++; st.texts=null; edited=false; regen(); });
   $('#copyBtn',w).addEventListener('click', async()=>{ try{ await navigator.clipboard.writeText(box.value); toast('Copied'); }catch(e){ box.select(); document.execCommand('copy'); toast('Copied'); } });
-  $('#aiBtn',w)?.addEventListener('click', async e=>{ const b=e.currentTarget; b.disabled=true; $('#composeStatus',w).textContent = llm.engine?'Writing…':'Loading the model (the first time takes a while)…';
-    try{ if(st.tone==='report'){ if(edited && !(await ask('Replace your edits with the AI-polished version?','Replace'))){ b.disabled=false; return; } st.texts = await llmPolishSections(l, sid); box.value=compose(l,sid,st); edited=false; }
-      else { box.value = await llmRewrite(box.value, l, sid, st.tone); edited=true; }
-      grow(); $('#composeStatus',w).textContent='Polished on your phone. Review it before sending.'; }
-    catch(err){ $('#composeStatus',w).textContent = 'AI unavailable ('+(err.message||err)+'). Your message is unchanged.'; }
-    b.disabled=false; });
+  const status = t => { const el=$('#composeStatus',w); if(el) el.textContent=t; };
+  const runAI = async (auto) => { const b=$('#aiBtn',w);
+    if(!aiReady()){ if(!auto) status(aiProvider()==='webllm'?'The on-device model isn’t supported in this browser.':'Add your API key in Settings → Parent updates to use AI.'); return; }
+    if(b) b.disabled=true; status(`✨ Polishing with ${aiName()}…`);
+    try{
+      if(st.tone==='report'){ if(!auto && edited && !(await ask('Replace your edits with the AI-polished version?','Replace'))){ if(b) b.disabled=false; status(''); return; }
+        const texts = await aiPolishSections(l, sid); if(auto && edited){ status('AI version ready, but you’ve started editing, so your text was kept.'); if(b) b.disabled=false; return; }
+        st.texts = texts; st.polish = true; l.ai = l.ai||{}; l.ai[sid] = {h:notesHash(l), texts}; save(); box.value = compose(l,sid,st); edited=false; }
+      else { box.value = await aiRewriteMessage(box.value, sid, st.tone); edited=true; }
+      grow(); status(`Polished by ${aiName()}. Please read it through before sending.`); }
+    catch(err){ status(`AI unavailable: ${String(err.message||err).replace(/[.\s]+$/,'')}. Showing the built-in wording.`); }
+    if(b) b.disabled=false; };
+  $('#aiBtn',w)?.addEventListener('click', ()=>runAI(false));
+  if(st.tone==='report' && st.polish && !st.texts && S.settings.aiAuto!==false && aiReady() && aiProvider()!=='webllm' && SEC.some(([k])=>lines(l[k]).length)) runAI(true);
+  else if(st.texts) status(`Polished by ${aiName()} earlier. Tap Rewrite for the built-in wording.`);
   $('#sendWA',w).addEventListener('click', ()=>{ openWA(s.parentPhone, box.value); l.sent=l.sent||{}; l.sent[sid]=true; save(); setTimeout(()=>{ closeSheet(); refresh(); toast('Marked as sent'); },500); });
 }
 
@@ -1206,6 +1271,8 @@ const ACT = {
   skipLevels: d => { S.settings.levelYear=+d.id; save(); closeSheet(); toast('Levels left as they are'); },
   reviewLevels: () => levelSheet(new Date().getFullYear()),
   toggleAutoLevel: () => { S.settings.autoLevel = S.settings.autoLevel===false; save(); render(); },
+  toggleAiAuto: () => { S.settings.aiAuto = S.settings.aiAuto===false; save(); render(); },
+  testAI: async () => { toast('Testing…'); try{ const r = await aiComplete('Reply with exactly: OK', 'Test', {max:20}); toast(/ok/i.test(r)?`${aiName()} is connected`:`${aiName()} replied: ${r.slice(0,40)}`); }catch(e){ toast(e.message||String(e)); } },
   waFee: d => { const s=stu(d.id); openWA(s.parentPhone, feeReminder(s, d.m)); (s.reminded=s.reminded||{})[d.m]=today(); save(); setTimeout(refresh,400); },
   waBlank: d => { const s=stu(d.id); openWA(s.parentPhone, s.parentName?`Hi ${s.parentName}, `:'Hi, '); },
   att: d => { const l=lessonById(d.id); l.attendance=l.attendance||{}; l.attendance[d.sid] = l.attendance[d.sid]===d.v ? undefined : d.v; save(); refresh(); },
@@ -1261,12 +1328,13 @@ async function shareOrDownload(name, text, type){
   try{ const file = new File([blob], name, {type}); if(navigator.canShare && navigator.canShare({files:[file]})){ await navigator.share({files:[file], title:name}); return; } }catch(e){ if(e.name==='AbortError') return; }
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; document.body.appendChild(a); a.click(); setTimeout(()=>{URL.revokeObjectURL(a.href); a.remove();},1000);
 }
-function exportData(){ shareOrDownload(`tutorbook-backup-${today()}.json`, JSON.stringify(S,null,1), 'application/json'); }
+function exportData(){ const c=JSON.parse(JSON.stringify(S)); Object.keys(c.settings).forEach(k=>{ if(k.startsWith('aiKey_')) delete c.settings[k]; }); shareOrDownload(`tutorbook-backup-${today()}.json`, JSON.stringify(c,null,1), 'application/json'); }
 $('#importFile').addEventListener('change', async e=>{
   const f=e.target.files[0]; if(!f) return;
   try{ const d=JSON.parse(await f.text()); if(!Array.isArray(d.students)||!Array.isArray(d.lessons)) throw 0;
     if(!(await ask(`Replace the data on this phone with this backup (${d.students.length} students, ${d.lessons.length} lessons)?`,'Restore backup'))) return;
-    S = Object.assign(DEFAULT(), d); S.settings=Object.assign(DEFAULT().settings,d.settings||{}); save(); render(); toast('Backup restored'); }
+    const keys = Object.fromEntries(Object.entries(S.settings).filter(([k])=>k.startsWith('aiKey_')));
+    S = Object.assign(DEFAULT(), d); S.settings=Object.assign(DEFAULT().settings,d.settings||{},keys); save(); render(); toast('Backup restored'); }
   catch(err){ toast('That file is not a Tutorbook backup'); }
   e.target.value='';
 });
