@@ -940,7 +940,9 @@ function tidy(t){
   x=x.replace(/\b\d+x(?:(?:\s*,\s*|\s+and\s+|\s+)\d+x)+\b/gi, g=>listify(g.split(/\s*,\s*|\s+and\s+|\s+/).filter(Boolean).map(z=>z.toLowerCase())));
   x=x.replace(/\b((?:the\s+)?[a-z0-9 ]{0,20}?(?:assessment book|workbook|textbook|worksheet|paper))\s+(pages? \d+(?:–\d+)?)/i,(m0,bk,pg)=>`${pg} of the ${bk.replace(/^the\s+/i,'')}`);
   x=x.replace(/\b(in|from|on|of)\s+(?!the\b|her\b|his\b|my\b|a\b|an\b|their\b|our\b|class\b)((?:[A-Z]{2}\d\s+)?(?:assessment book|workbook|textbook|worksheet|paper|exam paper)\b)/gi,'$1 the $2');
-  x=x.replace(/\s+so\s+(?!we\b|she\b|he\b|I\b|that\b)(\w+ed)\b/gi,', so we $1');
+  const me = /\bwith (her|him|them)\b/i.test(x) ? 'I' : 'we';
+  x=x.replace(/,?\s+so\s+(?!we\b|she\b|he\b|I\b|that\b|they\b)(went|gave|had|did|showed|taught|re-?assigned|assigned|\w+ed)\b/gi,(m0,v)=>`, so ${me} ${v}`);
+  x=x.replace(/\b(complete|finish|do|attempt)\s+(remaining|rest of)\b/gi,'$1 the $2').replace(/^(remaining|rest of)\b/i,'the $1');
   x=x.replace(/\s+([,.;:!?])/g,'$1').replace(/([,;:])(?=\S)/g,'$1 ').replace(/\.{2,}/g,'.').replace(/[.]+$/,'');
   return x.trim();
 }
@@ -957,7 +959,10 @@ function polishLine(raw, section, kid){
   const startsKid = new RegExp('^'+kid.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b','i').test(x);
   const body = lowerFirst(x);
   let out;
-  if(startsKid || HAS_SUBJECT.test(x) || /^(once|after|when|before|by|in|next|from|if|as|since|this|these|there|it)\b/i.test(x)) out = x;
+  const first = x.split(/,?\s+(?:so|but|and then|then)\s+/i)[0];
+  const tutorSide = /\bwith (her|him|them)\b/i.test(first) || /^(did not|didn't|no) (have )?time\b/i.test(x) || /^(was|were) not able to\b.*\bwith (her|him)/i.test(x);
+  if(tutorSide && !startsKid && !HAS_SUBJECT.test(x) && section==='summary') out = `I ${body}`;
+  else if(startsKid || HAS_SUBJECT.test(x) || /^(once|after|when|before|by|in|next|from|if|as|since|this|these|there|it)\b/i.test(x)) out = x;
   else if(section==='summary'){
     if(TUTOR_PAST.test(x)) out = `We ${body}`;
     else if(KID_PAST.test(x) || /\bfull marks|\bscored|\b\d+\s*\/\s*\d+/i.test(x) && /^\w+ed\b/.test(x)) out = `${kid} ${body}`;
