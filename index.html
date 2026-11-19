@@ -952,7 +952,7 @@ function tidy(t){
   const me = /\bwith (her|him|them)\b/i.test(x) ? 'I' : 'we';
   x=x.replace(/,?\s+so\s+(?!we\b|she\b|he\b|I\b|that\b|they\b)(went|gave|had|did|showed|taught|re-?assigned|assigned|\w+ed)\b/gi,(m0,v)=>`, so ${me} ${v}`);
   x=x.replace(/\b(complete|finish|do|attempt)\s+(remaining|rest of)\b/gi,'$1 the $2').replace(/^(remaining|rest of)\b/i,'the $1');
-  x=x.replace(/\s+([,.;:!?])/g,'$1').replace(/([,;:])(?=\S)/g,'$1 ').replace(/\.{2,}/g,'.').replace(/[.]+$/,'');
+  x=x.replace(/\s+([,.;:!?])/g,'$1').replace(/([,;])(?=\S)/g,'$1 ').replace(/:(?=[A-Za-z])/g,': ').replace(/\.{2,}/g,'.').replace(/[.]+$/,'');
   return x.trim();
 }
 const lowerFirst = x => /^[A-Z][a-z]/.test(x) && !/^(I|PSLE|MCQ|SA\d|WA\d)\b/.test(x) ? x[0].toLowerCase()+x.slice(1) : x;
@@ -1015,7 +1015,7 @@ function composeReport(l0, sid, o){
     if(o.improve && lines(l.improve).length){ const im=lines(l.improve); out.push(H('Areas for Improvement')+'\n'+(im.length>1?bl(im):sentence(im[0]))); }
   }
   const plan=[];
-  if(o.nextDate){ const nl=nextLessonFor(sid,l); if(nl) plan.push(`Our next lesson is on ${fmtDate(nl.date,true)} at ${fmtTime(nl.start)}${nl.location&&nl.location!==l.location?` (${nl.location})`:''}${nl.origDate?`, rescheduled from ${fmtDate(nl.origDate,true)} at ${fmtTime(nl.origStart)}`:''}`); }
+  if(o.nextDate && !/\bnext lesson (is|will be)\b/i.test((l0.next||'')+' '+(l0.ahead||''))){ const nl=nextLessonFor(sid,l); if(nl) plan.push(`Our next lesson is on ${fmtDate(nl.date,true)} at ${fmtTime(nl.start)}${nl.location&&nl.location!==l.location?` (${nl.location})`:''}${nl.origDate?`, rescheduled from ${fmtDate(nl.origDate,true)} at ${fmtTime(nl.origStart)}`:''}`); }
   if(o.next) plan.push(...lines(l.next));
   if(plan.length) out.push(H('Plan for the Next Lesson')+'\n'+bl(plan));
   const ahead=[];
@@ -1039,30 +1039,31 @@ function compose(lesson, sid, o){
   const greet = tone==='pro' ? `Dear ${parent||'Parent'},` : tone==='brief' ? `Hi ${parent||'there'},` : P([`Hi ${parent||'there'}! 😊`,`Hello ${parent||'there'}!`,`Hi ${parent||'there'},`]);
   out.push(greet);
   const body = [];
+  const sec = (k, kind) => (o.polish!==false ? lines(polishBlock(lesson[k], kind, kid)) : lines(lesson[k]).map(tidy)).map(sentence);
+  const para = arr => { const pre=`${kid} is to `; if(arr.length>1 && arr.every(x=>x.startsWith(pre))){ const rest=arr.map(x=>x.slice(pre.length).replace(/[.]+$/,'')); const verb=rest.every(x=>x.startsWith('complete '))?'complete ':''; return `${pre}${verb}${listify(rest.map(x=>verb?x.slice(verb.length):x))}.`; } return arr.join(' '); };
+  const bullets = arr => arr.map(x=>'• '+x).join('\n');
+  const dateInNotes = /\bnext lesson (is|will be)\b/i.test((lesson.next||'')+' '+(lesson.ahead||''));
   if(a==='absent'){
     body.push(tone==='pro' ? `I would like to inform you that ${kid} was absent from the ${subj} lesson ${when}.` : P([`${kid} missed ${isToday?"today's":'the'} ${subj} lesson${isToday?'':' '+when}.`, `Just letting you know ${kid} wasn't at ${isToday?"today's":'the'} ${subj} lesson${isToday?'':' '+when}.`]));
     body.push(tone==='pro' ? `Please let me know if a make-up lesson is required, and I will arrange a suitable time.` : P([`Let me know if you'd like to arrange a make-up lesson.`, `Happy to arrange a make-up lesson if needed, just let me know a time that works.`]));
   } else {
-    const cov = items(lesson.covered);
+    const cov=sec('covered','summary'), imp=sec('improve','improve'), hw=sec('homework','homework'), nx=sec('next','next');
     if(tone==='brief'){
       body.push(`Update on ${kid}'s ${subj} lesson (${fmtDate(lesson.date)}):`);
-      if(a==='late') body.push(`• Arrived late`);
-      if(o.covered && cov.length) body.push(`• Covered: ${items(lesson.covered,1).join('; ')}`);
-      if(o.homework && lesson.homework) body.push(`• Homework: ${items(lesson.homework,1).join('; ')}`);
-      if(o.next && lesson.next) body.push(`• Next lesson plan: ${listify(items(lesson.next,1))}`);
+      if(a==='late') body.push(`• ${kid} arrived late`);
+      [[o.covered,cov],[o.homework,hw],[o.improve,imp],[o.next,nx]].forEach(([on,arr])=>{ if(on && arr.length) body.push(bullets(arr)); });
     } else {
       let open = tone==='pro' ? `Here is an update on ${kid}'s ${subj} lesson ${when}.` : P([`Here's a quick update on ${kid}'s ${subj} lesson ${when}.`, `Sharing a short update on ${kid}'s ${subj} lesson ${when}.`, `Just a quick update on how ${kid}'s ${subj} lesson went ${when}.`]);
       if(a==='late') open += tone==='pro' ? ` ${kid} arrived slightly late, so we prioritised the key concepts.` : ` ${kid} came in a little late, so we focused on the most important parts.`;
       body.push(open);
-      if(o.covered && cov.length) body.push( (cov.length>2 || (cov.length>1 && cov.some(x=>x.includes(':'))) ? (tone==='pro'?'We covered the following:':P(['We worked on:','Here’s what we covered:'])) + '\n' + cov.map(x=>'• '+x[0].toUpperCase()+x.slice(1)).join('\n')
-        : (tone==='pro' ? `We covered ${listify(cov)}.` : P([`We covered ${listify(cov)}.`, `We worked on ${listify(cov)}.`, `In class, we went through ${listify(cov)}.`]))) );
+      if(o.covered && cov.length) body.push((tone==='pro' ? 'Here is a summary of the lesson:' : P(["Here's what we did:","Here's what we worked on:"])) + '\n' + bullets(cov));
       if(o.focus && s.learning) body.push(tone==='pro' ? `Current focus: ${s.learning.replace(/[.]+$/,'')}.` : `Our current focus is ${items(s.learning).join('; ')}.`);
-      if(o.improve && lesson.improve) body.push(tone==='pro' ? `Area for improvement: ${items(lesson.improve,1).join('; ')}.` : `Something we're working on: ${items(lesson.improve).join('; ')}.`);
-      if(o.homework && lesson.homework) body.push(tone==='pro' ? `Homework: ${items(lesson.homework,1).join('; ')}. Kindly remind ${kid} to complete it before the next lesson.` : P([`For homework, ${kid} can complete ${items(lesson.homework).join('; ')}.`, `Homework: ${items(lesson.homework,1).join('; ')}. Please help remind ${kid} to finish it before our next lesson 🙏`]));
-      if(o.next && lesson.next) body.push(tone==='pro' ? `In the next lesson, we will move on to ${listify(items(lesson.next))}.` : P([`Next lesson, we'll move on to ${listify(items(lesson.next))}.`, `Up next: ${listify(items(lesson.next,1))}.`]));
+      if(o.improve && imp.length) body.push(para(imp));
+      if(o.homework && hw.length) body.push(para(hw) + (tone==='pro' ? ` Kindly remind ${kid} to complete ${hw.length>1?'them':'it'} before the next lesson.` : ` Please help remind ${kid} to finish ${hw.length>1?'them':'it'} before our next lesson 🙏`));
+      if(o.next && nx.length) body.push(para(nx));
     }
   }
-  if(o.nextDate){ const nl = nextLessonFor(sid, lesson); if(nl){
+  if(o.nextDate && !dateInNotes){ const nl = nextLessonFor(sid, lesson); if(nl){
     let t = `${tone==='pro'?'The next lesson is scheduled for':'Our next lesson is on'} ${fmtDate(nl.date,true)} at ${fmtTime(nl.start)}${nl.location&&nl.location!==lesson.location?` (${nl.location})`:''}`;
     if(tone==='brief') t = `• Next lesson: ${fmtDate(nl.date)}, ${fmtTime(nl.start)}${nl.origDate?` (moved from ${fmtDate(nl.origDate)} ${fmtTime(nl.origStart)})`:''}`;
     else if(nl.origDate) t += tone==='pro' ? `, rescheduled from ${fmtDate(nl.origDate)} ${fmtTime(nl.origStart)}. Please take note.` : `. Please note it's been moved from ${fmtDate(nl.origDate)} ${fmtTime(nl.origStart)}.`;
@@ -1071,7 +1072,7 @@ function compose(lesson, sid, o){
   if(o.exam){ const ex = upcomingExams(sid, lesson.date>today()?lesson.date:today(), 60)[0]; if(ex){
     const d = ex.days; const dl = d===0?'today':d===1?'tomorrow':`in ${d} days`;
     body.push(tone==='brief' ? `• ${ex.title}: ${fmtDate(ex.date)} (${dl})` : tone==='pro' ? `As ${ex.title} is ${dl} (${fmtDate(ex.date,true)}), we will continue to prioritise revision in the coming lessons.` : P([`With ${ex.title} coming up ${dl} (${fmtDate(ex.date)}), we'll keep up the revision. ${kid} can do it! 💪`, `${ex.title} is ${dl}, on ${fmtDate(ex.date)}, so we'll keep revising steadily till then.`])); } }
-  if(o.ahead && lesson.ahead && a!=='absent') body.push(tone==='brief' ? `• Looking ahead: ${items(lesson.ahead,1).join('; ')}` : `Looking ahead, ${items(lesson.ahead).join('; ')}.`);
+  if(o.ahead && lesson.ahead && a!=='absent'){ const ah=sec('ahead','ahead'); if(ah.length) body.push(tone==='brief' ? bullets(ah) : para(ah)); }
   if(o.remarks && lesson.remarks) body.push((tone==='brief'?'• ':'') + lesson.remarks.trim());
   if(o.payment){ const m=ym(lesson.date); const f=feeStatus(s,m); const owe=f.due-f.paid; if(owe>0)
     body.push(tone==='pro' ? `Kindly note that the fees for ${MONL[+m.slice(5)-1]} (${money(owe)}) ${dueWords(f)}. Thank you.` : tone==='brief' ? `• ${MONL[+m.slice(5)-1]} fees: ${money(owe)}${f.dueDate?`, due ${fmtDate(f.dueDate)}`:''}` : `A gentle reminder that ${MONL[+m.slice(5)-1]}'s fees of ${money(owe)} ${dueWords(f)}. Thank you!`); }
